@@ -3,7 +3,7 @@
 # Run on the PC (Git Bash), never on the VPS:
 #
 #   ./k8s-new-project <repo folder> <project> <site> <web address> [api address]
-#   ./k8s-new-project ../MyApp my-app my-app.remservers.me 10.43.0.83 10.43.0.84
+#   ./k8s-new-project ../MyApp my-app my-app.remservers.me 10.43.0.84 10.43.0.85
 #
 # <project> becomes the namespace and the start of the image names. Leave the api address out for a
 # project that is only a web app. It never overwrites a file, and it commits nothing.

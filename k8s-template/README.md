@@ -10,7 +10,7 @@ How the cluster and the pipeline work is written up in `Kubernetes-and-pipeline.
 
 - **A project name**, lowercase with dashes (`my-app`). It becomes the namespace and the start of the image names.
 - **The site name** (`my-app.remservers.me`).
-- **One free address per pod**, from `10.43.0.83` up. See which are taken, on the VPS:
+- **One free address per pod**, from `10.43.0.84` up (`.80` to `.83` are taken: the Rem RaaS web app, the portal's two pods, the Rem RaaS management API). See which are taken, on the VPS:
 
 ```bash
 sudo kubectl get svc -A
@@ -21,7 +21,7 @@ sudo kubectl get svc -A
 From the `Cluster` folder. Leave the last address out for a project with no backend.
 
 ```bash
-./k8s-new-project ../MyApp my-app my-app.remservers.me 10.43.0.83 10.43.0.84
+./k8s-new-project ../MyApp my-app my-app.remservers.me 10.43.0.84 10.43.0.85
 ```
 
 It writes `frontend/Dockerfile`, `frontend/nginx.conf`, `frontend/.dockerignore`, `k8s/namespace.yaml`, `k8s/web.yaml`, `nginx-site.conf`, `.github/workflows/image.yml` and, with a backend, `backend/Dockerfile`, `backend/.dockerignore`, `k8s/api.yaml`. It never overwrites a file and commits nothing.
@@ -73,7 +73,7 @@ Then the web app:
 sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/MyApp/main/k8s/web.yaml
 sudo kubectl -n my-app rollout status deployment/web --timeout=120s
 sudo kubectl -n my-app get pods,svc
-curl -s http://10.43.0.83/healthz        # ok
+curl -s http://10.43.0.84/healthz        # ok
 ```
 
 If a pod does not come up: `sudo kubectl -n my-app describe pod -l app=api` and `sudo kubectl -n my-app logs deployment/api`.
