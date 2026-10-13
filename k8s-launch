@@ -332,10 +332,10 @@ fi
 step "First commit and push"
 if [[ -n "$hascommits" ]]; then
   mapfile -t add < <(sed -nE 's/^(wrote|rewrote) //p' <<<"$written")
-  g add -- .gitignore "${add[@]}"
+  g -c core.safecrlf=false add -- .gitignore "${add[@]}"
   g commit -q -m "cluster files: the project is launched"
 else
-  g add -A
+  g -c core.safecrlf=false add -A
   g commit -q -m "first commit, with the cluster files"
 fi
 g push -q -u origin main
