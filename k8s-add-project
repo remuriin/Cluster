@@ -1,23 +1,32 @@
 #!/bin/bash
 # Lets a project's GitHub workflow deploy to its own namespace: makes the project's deploy key and
-# pins it to that namespace. Run once per project, on the VPS:
+# pins it to that namespace. k8s-launch runs it for you; by hand, once per project, on the VPS:
 #
-#   sudo /opt/cluster/k8s-add-project <namespace>
+#   sudo /opt/cluster/k8s-add-project [--replace] <namespace>
 #
 # It prints the private half once, for the repository's DEPLOY_KEY secret, and keeps no copy of it.
+# --replace throws the namespace's old key away first (for a secret that was lost on GitHub).
 set -euo pipefail
 
 die() { echo "k8s-add-project: $1" >&2; exit 2; }
 
 NAME_RE='^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$'
-KEYS=/home/deploy/.ssh/authorized_keys
+# the cluster's own namespaces: a key there could replace parts of Kubernetes itself
+RESERVED_RE='^(default|kube-system|kube-public|kube-node-lease)$'
+# K8S_TEST_ROOT is for the tests only: it moves the one file this touches into a throwaway folder
+KEYS=${K8S_TEST_ROOT:-}/home/deploy/.ssh/authorized_keys
 
-[[ $EUID -eq 0 ]] || die "run it with sudo"
-[[ $# -eq 1 && "$1" =~ $NAME_RE ]] || die "usage: sudo k8s-add-project <namespace>"
+replace=
+if [[ "${1:-}" == --replace ]]; then replace=1; shift; fi
+[[ -n "${K8S_TEST_ROOT:-}" || $EUID -eq 0 ]] || die "run it with sudo"
+[[ $# -eq 1 && "$1" =~ $NAME_RE ]] || die "usage: sudo k8s-add-project [--replace] <namespace>"
 ns=$1
+[[ ! "$ns" =~ $RESERVED_RE ]] || die "$ns is one of the cluster's own namespaces"
 [[ -d "$(dirname "$KEYS")" ]] || die "the deploy user is not set up yet (see README.md)"
 if grep -qsF "k8s-deploy $ns\"" "$KEYS"; then
-  die "$ns already has a key. To replace it, delete its line from $KEYS and run this again"
+  [[ -n "$replace" ]] || die "$ns already has a key. To replace it, run this again with --replace"
+  # the name was checked above, so it holds nothing sed could misread
+  sed -i "/k8s-deploy $ns\"/d" "$KEYS"
 fi
 
 dir=$(mktemp -d)
@@ -33,4 +42,4 @@ echo "repository's secret DEPLOY_KEY (Settings, Secrets and variables, Actions, 
 echo "======================================================================"
 cat "$dir/key"
 echo "======================================================================"
-echo "It is not stored anywhere on this machine. If it is lost, delete the line from $KEYS and run this again."
+echo "It is not stored anywhere on this machine. If it is lost, run this again with --replace."

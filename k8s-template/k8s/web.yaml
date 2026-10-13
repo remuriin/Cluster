@@ -20,12 +20,12 @@ spec:
           image: ghcr.io/remuriin/PROJECT-web:main
           imagePullPolicy: Always
           ports:
-            - containerPort: 8080
+            - containerPort: WEB_PORT
           # traffic is only sent to the pod once this answers
           readinessProbe:
             httpGet:
-              path: /healthz
-              port: 8080
+              path: WEB_HEALTH
+              port: WEB_PORT
             periodSeconds: 5
           # requests: what it is promised. limits: the ceiling it can never go over.
           resources:
@@ -34,9 +34,11 @@ spec:
               memory: 16Mi
             limits:
               cpu: 250m
-              memory: 64Mi
+              memory: WEB_MEMMi
           securityContext:
+            # an image that runs as root is refused
             runAsNonRoot: true
+            runAsUser: WEB_USER
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
@@ -55,4 +57,4 @@ spec:
     app: web
   ports:
     - port: 80
-      targetPort: 8080
+      targetPort: WEB_PORT

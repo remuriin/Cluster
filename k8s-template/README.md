@@ -1,8 +1,8 @@
-# A new project in the cluster
+# A new project in the cluster, by hand
 
-What a project needs to run in the VPS's Kubernetes cluster and deploy on a push to `main`, and the order to do it in. Two scripts do the fiddly parts; the rest is a checklist.
+**`k8s-launch` does all of this in one command** (see the `README.md` one folder up). This page is the same launch step by step: for understanding what the command does, for a project it does not fit, and for when one step has to be redone by hand.
 
-It fits a repository shaped like `RaaS` and `RemServers`: a web app in `frontend/` (built with `npm run build` into `dist/`) and, optionally, a Node backend in `backend/` (`npm run build` into `dist/`, started with `node dist/server.js` on port 3000). Anything else: change the two Dockerfiles.
+It fits a repository shaped like `RaaS` and `RemServers`: a web app in `frontend/` (built with `npm run build` into `dist/`) and, optionally, a Node backend in `backend/` (`npm run build` into `dist/`, started with `node dist/server.js` on port 3000). A piece that brings its own Dockerfile keeps it; `k8s-new-project` then takes the port, the health address, the user number and the memory ceiling as settings (its first lines say how).
 
 How the cluster and the pipeline work is written up in `Kubernetes-and-pipeline.md`.
 
@@ -24,7 +24,7 @@ From the `Cluster` folder. Leave the last address out for a project with no back
 ./k8s-new-project ../MyApp my-app my-app.remservers.me 10.43.0.84 10.43.0.85
 ```
 
-It writes `frontend/Dockerfile`, `frontend/nginx.conf`, `frontend/.dockerignore`, `k8s/namespace.yaml`, `k8s/web.yaml`, `nginx-site.conf`, `.github/workflows/image.yml` and, with a backend, `backend/Dockerfile`, `backend/.dockerignore`, `k8s/api.yaml`. It never overwrites a file and commits nothing.
+It writes `frontend/Dockerfile`, `frontend/nginx.conf`, `frontend/.dockerignore`, `k8s/namespace.yaml`, `k8s/web.yaml`, `nginx-site.conf`, `.github/workflows/image.yml` and, with a backend, `backend/Dockerfile`, `backend/.dockerignore`, `k8s/api.yaml`. A file that already exists is kept, and it commits nothing.
 
 Then look at three things in what it wrote:
 
@@ -47,7 +47,7 @@ It prints a private key once. Copy all of it, the `BEGIN` and `END` lines includ
 
 ## 4. Commit and push
 
-The first run builds the images and then fails in `deploy`, because nothing exists in the cluster yet. That is expected; the images are what this step is for.
+Done in this order, the first run builds the images and then fails in `deploy`, because nothing exists in the cluster yet. That is expected; the images are what this step is for, and step 8 re-runs the failed job. (`k8s-launch` avoids the red run by doing step 6 before the push: the pods then exist and wait for their first image.)
 
 ## 5. GitHub: check the images are public
 
@@ -105,4 +105,4 @@ sudo kubectl delete namespace my-app                       # its pods, services 
 sudo rm /etc/nginx/sites-enabled/my-app && sudo nginx -t && sudo systemctl reload nginx
 ```
 
-and delete its line from `/home/deploy/.ssh/authorized_keys`.
+and delete its line from `/home/deploy/.ssh/authorized_keys`. A site that has a certificate: `sudo certbot delete --cert-name my-app.remservers.me`. On GitHub, deleting the repository does not delete its image packages (Profile, Packages); delete those too, or a later project with the same name runs into them.

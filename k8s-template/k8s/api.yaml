@@ -20,7 +20,7 @@ spec:
           image: ghcr.io/remuriin/PROJECT-api:main
           imagePullPolicy: Always
           ports:
-            - containerPort: 3000
+            - containerPort: API_PORT
           # every setting of the backend's .env, from a secret created by hand on the VPS:
           #   sudo kubectl -n PROJECT create secret generic backend-env --from-env-file=<the .env file>
           # The values are never in the repository or in the image. Without the secret the pod does not start.
@@ -35,20 +35,21 @@ spec:
           # an address of the backend that answers 200 without a login, once it is ready to work
           readinessProbe:
             httpGet:
-              path: /
-              port: 3000
-            periodSeconds: 30
+              path: API_HEALTH
+              port: API_PORT
+            periodSeconds: 5
           resources:
             requests:
               cpu: 20m
               memory: 96Mi
             limits:
               cpu: 500m
-              memory: 256Mi
+              memory: API_MEMMi
           securityContext:
+            # an image that runs as root is refused
             runAsNonRoot: true
-            # the "node" user of the image, by number
-            runAsUser: 1000
+            # the user the image runs as, by number (1000 is the "node" user of the Node images)
+            runAsUser: API_USER
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
@@ -65,4 +66,4 @@ spec:
     app: api
   ports:
     - port: 80
-      targetPort: 3000
+      targetPort: API_PORT
