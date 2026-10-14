@@ -110,6 +110,8 @@ step "Git and GitHub"
 [[ "$(gh_ api user -q .login 2>/dev/null)" == "$OWNER" ]] || die "gh is not logged in as $OWNER (gh auth login)"
 hascommits=
 origin=
+# whether anything of the project is on GitHub yet (a repository made by a run that stopped is empty)
+pushed=
 if [[ -d "$repo/.git" ]]; then
   ! g rev-parse -q --verify HEAD >/dev/null 2>&1 || hascommits=1
   origin=$(g remote get-url origin 2>/dev/null || true)
@@ -122,6 +124,7 @@ if [[ -n "$origin" ]]; then
     || die "$OWNER/$name is not a public repository. The cluster downloads images without a login, so it has to be"
   g fetch -q origin
   if g rev-parse -q --verify origin/main >/dev/null 2>&1; then
+    pushed=1
     [[ "$(g rev-list --count HEAD..origin/main)" == 0 ]] || die "GitHub has commits this folder does not. Pull first"
   fi
   echo "repository: $OWNER/$name"
@@ -232,7 +235,7 @@ done
 
 # A repository that is not on GitHub yet becomes public with everything in it, and that cannot be
 # taken back. So what would go up is searched for things that must not.
-if [[ -z "$origin" ]]; then
+if [[ -z "$pushed" ]]; then
   if [[ -n "$hascommits" ]]; then list=(ls-files -z); else list=(ls-files -z -co --exclude-standard); fi
   SECRET_NAMES='(^|/)\.env($|\.)|\.(pem|key|p12|pfx|jks|ppk)$|(^|/)id_(rsa|ed25519|ecdsa|dsa)|service-?account[^/]*\.json$|adminsdk[^/]*\.json$|(^|/)\.npmrc$'
   names=$(g "${list[@]}" | tr '\0' '\n' | grep -E "$SECRET_NAMES" | grep -vE '(^|/)\.env\.example$' || true)
@@ -303,9 +306,12 @@ fi
 
 if [[ -z "$hashook" ]]; then
   step "The webhook that tells Flux about each build"
-  # the secret goes from its file to GitHub, never onto a command line or the screen
+  # the secret goes from its file to GitHub, never onto a command line or the screen.
+  # gh is a Windows program and gets no path translation (gh_), so it is handed the Windows form.
+  tokenfile=$HOOK_TOKEN
+  ! command -v cygpath >/dev/null || tokenfile=$(cygpath -w "$HOOK_TOKEN")
   gh_ api "repos/$slug/hooks" -f name=web -F active=true -f 'events[]=workflow_run' \
-    -f "config[url]=$HOOK_HOST$hookpath" -f 'config[content_type]=json' -F "config[secret]=@$HOOK_TOKEN" >/dev/null
+    -f "config[url]=$HOOK_HOST$hookpath" -f 'config[content_type]=json' -F "config[secret]=@$tokenfile" >/dev/null
   echo "  $HOOK_HOST/hook/... on every workflow run"
 fi
 

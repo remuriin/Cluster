@@ -59,6 +59,7 @@ case "$1 $2" in
   "api repos/"*)
     r=${2#repos/}; r=${r%/hooks}
     if [[ "$*" == *"config[url]="* ]]; then
+      [[ ! -e "$K8S_TEST_ROOT/hooks-fail" ]] || { echo "error parsing \"config[secret]\" value" >&2; exit 1; }
       for a in "$@"; do [[ "$a" != "config[secret]=@"* ]] || cp "${a#"config[secret]=@"}" "$G/hook-secret"; done
       echo "$r" >> "$G/hooks"
     else
@@ -230,6 +231,17 @@ echo wip > "$T/p3/frontend/src/unfinished.ts"
 reset; printf 'p3\ny\n' | launch "$T/p3"; code=$?
 ok "an existing repository: first launch succeeds" '[[ $code -eq 0 ]]'
 ok "... and only the new files were committed, not the unfinished work" '! git -C "$T/remotes/remuriin/p3.git" ls-tree -r --name-only main | grep -q unfinished && git -C "$T/remotes/remuriin/p3.git" ls-tree -r --name-only main | grep -q ".github/workflows/image.yml"'
+
+# --- a first launch that stops after making the repository, before the first push ---
+project p5; touch "$T/hooks-fail"
+reset; printf '\np5\ny\n' | launch "$T/p5"; code=$?; rm "$T/hooks-fail"
+ok "a run that stops at the webhook leaves an empty repository and nothing pushed" '[[ $code -ne 0 && -d "$T/remotes/remuriin/p5.git" ]] && ! git -C "$T/remotes/remuriin/p5.git" rev-parse -q --verify main >/dev/null'
+echo "key" > "$T/p5/frontend/server.pem"
+reset; printf 'p5\ny\n' | launch "$T/p5"
+ok "... the run after it still searches for secrets before the first push" 'out | grep -q "frontend/server.pem" && ! git -C "$T/remotes/remuriin/p5.git" rev-parse -q --verify main >/dev/null'
+rm "$T/p5/frontend/server.pem"
+reset; printf 'p5\ny\n' | launch "$T/p5"; code=$?
+ok "... and once it is clean, it goes on and launches" '[[ $code -eq 0 ]] && out | grep -q "Live: https://p5.remservers.me"'
 
 # --- the pipeline fails, then is fixed ---
 project p4; touch "$T/run-fails"
