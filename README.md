@@ -10,7 +10,6 @@ What runs in the cluster is decided by the private repository `Fleet`: Flux, ins
 | `k8s-new-project` | PC | Fills in `k8s-template/` for one project: its own files, and its folder in Fleet. Run by `k8s-launch` |
 | `k8s-template/` | | The files a project needs (`fleet/` is its folder in Fleet), and `README.md`, the same launch done by hand |
 | `nginx/` | VPS, `/etc/nginx/sites-available/` | The sites in front of the cluster: `projects` (every launched project), `flux` (GitHub's webhooks to Flux), `rem-servers` (the portal) |
-| `k8s-deploy`, `sudoers-deploy` | VPS | The old deploy path (the pipeline logging in over SSH). Unused since Flux deploys; removed once Flux has proven itself |
 | `*.test.sh` | PC | The scripts' checks |
 
 ## Launching a project
@@ -85,7 +84,8 @@ Going back: in Fleet, take the `# {"$imagepolicy": ...}` marker off the image li
 ```bash
 bash k8s-template.test.sh        # k8s-new-project
 bash k8s-launch.test.sh          # k8s-launch, from end to end
-docker run --rm -v "$PWD":/d:ro bash:5 bash /d/k8s-deploy.test.sh
 ```
 
-The first two need only bash and git. They put pretend programs (`gh`, `sops`, `curl`) in place of the real ones, keep GitHub and Fleet as folders, and keep every file in a throwaway folder. `k8s-deploy`'s test runs in a throwaway container.
+Both need only bash and git. They put pretend programs (`gh`, `sops`, `curl`) in place of the real ones, keep GitHub and Fleet as folders, and keep every file in a throwaway folder.
+
+Until 2026-10-15 a pipeline deployed by logging in to the VPS over SSH as the user `deploy` and running `k8s-deploy`, and a launch ran `k8s-up-project` on the VPS. Flux replaced both; the git history before that date has them.
