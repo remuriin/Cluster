@@ -39,7 +39,7 @@ GIT_BASE=${K8S_GIT_BASE:-https://github.com}
 
 NAME_RE='^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$'
 # names that are a site of their own, a namespace of the cluster, or an image another project uses
-RESERVED_RE='^(default|kube-.*|flux.*|flagger.*|www|api|mail|rag|raas|rag-api|remservers|rem-servers|rem-raas.*|portal|panel|status|monitor|node|learnhub.*|course-sandbox)$'
+RESERVED_RE='^(default|kube-.*|flux|flux-system|flagger|flagger-system|flagger-loadtester|www|api|mail|rag|raas|rag-api|remservers|rem-servers|rem-raas|rem-raas-backend|rem-raas-clients|portal|panel|status|monitor|node|learnhub|learnhub-api|course-sandbox)$'
 REPO_RE='^[A-Za-z0-9._-]+$'
 TAG_RE='^(main|main-[0-9a-f]{40}-[0-9]+)$'
 

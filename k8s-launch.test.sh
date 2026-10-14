@@ -129,6 +129,10 @@ for n in kube-system rag portal flux-system rem-raas-clients flux; do
   reset; printf '\n%s\ny\n' "$n" | launch "$T/p1"
   ok "the taken name $n is refused" 'out | grep -q "is taken"'
 done
+for n in fluxtest rag2 portals; do
+  reset; printf '\n%s\nn\n' "$n" | launch "$T/p1"
+  ok "a name that only starts like a taken one ($n) is fine" '! out | grep -q "is taken" && out | grep -q "stopped"'
+done
 reset; printf '\nrem-servers\ny\n' | launch "$T/p1"
 ok "a name already in Fleet is refused" 'out | grep -qE "is taken|already in Fleet"'
 touch "$T/gh-other-account"; reset; printf '\np1\ny\n' | launch "$T/p1"; rm "$T/gh-other-account"
