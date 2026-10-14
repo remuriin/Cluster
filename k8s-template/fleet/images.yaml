@@ -1,0 +1,51 @@
+# Flux watches this project's images on ghcr.io and picks the newest build of main:
+# tags main-<commit>-<commit time>, highest commit time wins.
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: app-PROJECT-web
+  namespace: flux-system
+spec:
+  image: ghcr.io/remuriin/PROJECT-web
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: app-PROJECT-web
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: app-PROJECT-web
+  filterTags:
+    pattern: '^main-[0-9a-f]{40}-(?P<ts>[0-9]+)$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+# api:begin
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImageRepository
+metadata:
+  name: app-PROJECT-api
+  namespace: flux-system
+spec:
+  image: ghcr.io/remuriin/PROJECT-api
+  interval: 5m
+---
+apiVersion: image.toolkit.fluxcd.io/v1
+kind: ImagePolicy
+metadata:
+  name: app-PROJECT-api
+  namespace: flux-system
+spec:
+  imageRepositoryRef:
+    name: app-PROJECT-api
+  filterTags:
+    pattern: '^main-[0-9a-f]{40}-(?P<ts>[0-9]+)$'
+    extract: '$ts'
+  policy:
+    numerical:
+      order: asc
+# api:end

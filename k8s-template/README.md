@@ -4,105 +4,75 @@
 
 It fits a repository shaped like `RaaS` and `RemServers`: a web app in `frontend/` (built with `npm run build` into `dist/`) and, optionally, a Node backend in `backend/` (`npm run build` into `dist/`, started with `node dist/server.js` on port 3000). A piece that brings its own Dockerfile keeps it; `k8s-new-project` then takes the port, the health address, the user number and the memory ceiling as settings (its first lines say how).
 
-How the cluster and the pipeline work is written up in `Kubernetes-and-pipeline.md`.
+How the cluster, Flux and the pipeline work is written up in `Kubernetes-and-pipeline.md`.
 
-## Before you start: pick three things
+## Before you start
 
-- **A project name**, lowercase with dashes (`my-app`). It becomes the namespace and the start of the image names.
-- **The site name** (`my-app.remservers.me`).
-- **One free address per pod**, from `10.43.0.84` up (`.80` to `.83` are taken: the Rem RaaS web app, the portal's two pods, the Rem RaaS management API). See which are taken, on the VPS:
+- **A project name**, lowercase with dashes (`my-app`). It becomes the site (`my-app.remservers.me`), the namespace (`app-my-app`) and the start of the image names. It must not be in Fleet's `apps/` yet.
+- Fleet cloned next to the `Cluster` folder, up to date (`git pull --rebase`).
 
-```bash
-sudo kubectl get svc -A
-```
+## 1. The project's own files (PC, Git Bash)
 
-## 1. Put the files in the repository (PC, Git Bash)
-
-From the `Cluster` folder. Leave the last address out for a project with no backend.
+From the `Cluster` folder. Leave `api` out for a project with no backend.
 
 ```bash
-./k8s-new-project ../MyApp my-app my-app.remservers.me 10.43.0.84 10.43.0.85
+./k8s-new-project repo ../MyApp my-app api
 ```
 
-It writes `frontend/Dockerfile`, `frontend/nginx.conf`, `frontend/.dockerignore`, `k8s/namespace.yaml`, `k8s/web.yaml`, `nginx-site.conf`, `.github/workflows/image.yml` and, with a backend, `backend/Dockerfile`, `backend/.dockerignore`, `k8s/api.yaml`. A file that already exists is kept, and it commits nothing.
+It writes `.github/workflows/image.yml`, and `frontend/Dockerfile`, `frontend/nginx.conf`, `frontend/.dockerignore` (and with a backend `backend/Dockerfile`, `backend/.dockerignore`) for each piece that has no Dockerfile. A file that exists is kept, and it commits nothing.
 
-Then look at three things in what it wrote:
+Then look at what it wrote:
 
-- **Values the web app needs while building** (Vite's `VITE_` ones): an `ARG` line each in `frontend/Dockerfile`, and the same names under `build-args` in the workflow. Both have a commented example.
-- **The backend's readiness address** in `k8s/api.yaml`: an address that answers 200 without a login. The template asks `/`.
-- **Settings that say `localhost`** in the backend's `.env`: inside a pod that is the pod itself. Name the VPS by its own address, `10.0.0.135`, in the `env:` part of `k8s/api.yaml` (commented example there).
+- **Values the web app needs while building** (Vite's `VITE_` ones): an `ARG` line each in `frontend/Dockerfile`, and the same names under `build-args` in the workflow. Both have a commented example. Each one also goes into the repository's **Variables** (Settings, Secrets and variables, Actions).
 
-## 2. GitHub: the variables
+## 2. GitHub: the repository and its webhook
 
-Repository → Settings → Secrets and variables → Actions → **Variables** tab: one variable per `ARG` line from step 1. Skip this if there are none.
+The repository must be public (the cluster downloads images without a login). Then the webhook, in PowerShell, with the path from Fleet's `projects-hook` file:
 
-## 3. VPS: the deploy key
+```powershell
+gh api repos/remuriin/MyApp/hooks -f name=web -F active=true -f "events[]=workflow_run" -f "config[url]=https://flux.remservers.me<path from projects-hook>" -f "config[content_type]=json" -F "config[secret]=@$HOME\.fleet\webhook-token"
+```
+
+## 3. Commit, push, and wait for the images
+
+The first run of the workflow builds the images. Note the commit (`git rev-parse HEAD`) and its time (`git show -s --format=%ct HEAD`): the image tag is `main-<commit>-<time>`.
+
+## 4. The project's folder in Fleet (PC, Git Bash)
 
 ```bash
-cd /opt/cluster && sudo git pull
-sudo /opt/cluster/k8s-add-project my-app
+./k8s-new-project fleet ../Fleet my-app MyApp main-<commit>-<time> main-<commit>-<time> env
 ```
 
-It prints a private key once. Copy all of it, the `BEGIN` and `END` lines included, into the repository's **secret** `DEPLOY_KEY` (same page as step 2, **Secrets** tab).
+(the second tag is the backend's; `env` only if the backend has settings). It writes `apps/my-app/` (namespace, Deployments, Services, the images Flux watches, the list of them) and `clusters/rem-vm/app-my-app.yaml` (the line that tells Flux to apply that folder).
 
-## 4. Commit and push
-
-Done in this order, the first run builds the images and then fails in `deploy`, because nothing exists in the cluster yet. That is expected; the images are what this step is for, and step 8 re-runs the failed job. (`k8s-launch` avoids the red run by doing step 6 before the push: the pods then exist and wait for their first image.)
-
-## 5. GitHub: check the images are public
-
-The cluster downloads without a login, so the images must be public. For a public repository they already are (that was the case for `RaaS` and `RemServers`), so this is only a look: Profile → Packages → `my-app-web` (and `my-app-api`) should say "Public". For a private repository, or if one says "Private": Package settings → Change visibility → Public.
-
-## 6. VPS: start it in the cluster
+With settings, encrypt them into the folder (the age public key is in Fleet's `.sops.yaml`):
 
 ```bash
-sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/MyApp/main/k8s/namespace.yaml
+tr -d '\r' < ../MyApp/backend/.env > ~/.fleet/plain.env
+sops -e --input-type dotenv --output-type dotenv --age age1... ~/.fleet/plain.env > ../Fleet/apps/my-app/backend.env
+rm ~/.fleet/plain.env
 ```
 
-With a backend, its settings first (the file is your own `.env`, with plain unquoted values), and if it uses Postgres on the VPS nothing more is needed: the firewall already lets pods reach port 5432.
+Check two things in what it wrote:
+
+- **The backend's readiness address** in `apps/my-app/api.yaml`: an address that answers 200 without a login. The template asks `/`.
+- **Settings that say `localhost`**: inside a pod that is the pod itself. Name the VPS by its own address, `10.0.0.135`, in the `env:` part of `api.yaml` (commented example there).
+
+Commit and push Fleet. Within seconds Flux creates `app-my-app` and the pods, and `https://my-app.remservers.me` answers.
+
+## 5. Check it (VPS)
 
 ```bash
-sudo kubectl -n my-app create secret generic backend-env --from-env-file=/path/to/.env
-sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/MyApp/main/k8s/api.yaml
-sudo kubectl -n my-app rollout status deployment/api --timeout=120s
+sudo flux get kustomizations app-my-app --kubeconfig=/etc/rancher/k3s/k3s.yaml
+sudo kubectl -n app-my-app get pods,svc
 ```
 
-Then the web app:
+If a pod does not come up: `sudo kubectl -n app-my-app describe pod -l app=api` and `sudo kubectl -n app-my-app logs deployment/api`.
 
-```bash
-sudo kubectl apply -f https://raw.githubusercontent.com/remuriin/MyApp/main/k8s/web.yaml
-sudo kubectl -n my-app rollout status deployment/web --timeout=120s
-sudo kubectl -n my-app get pods,svc
-curl -s http://10.43.0.84/healthz        # ok
-```
+## 6. Write it down
 
-If a pod does not come up: `sudo kubectl -n my-app describe pod -l app=api` and `sudo kubectl -n my-app logs deployment/api`.
-
-## 7. The site: DNS, nginx, certificate
-
-1. In Cloudflare, an `A` record for the site name pointing at the VPS ("DNS only"), or a route in the tunnel to `https://localhost:443`.
-2. On the VPS, with `nginx-site.conf` from the repository:
-
-```bash
-sudo curl -fsSL -o /etc/nginx/sites-available/my-app https://raw.githubusercontent.com/remuriin/MyApp/main/nginx-site.conf
-sudo ln -s /etc/nginx/sites-available/my-app /etc/nginx/sites-enabled/my-app
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d my-app.remservers.me
-```
-
-## 8. Prove the pipeline
-
-On the failed run's page: **Re-run jobs → Re-run failed jobs**. `deploy` should go green and print `my-app/web now runs <commit>`. From then on, a push to `main` is the deploy.
-
-## 9. Write it down
-
-Add the project to `Kubernetes-and-pipeline.md`: the table of namespaces and addresses, and the picture.
+Add the project to `Kubernetes-and-pipeline.md`: the table of namespaces, and the picture.
 
 ## Taking a project out again
 
-```bash
-sudo kubectl delete namespace my-app                       # its pods, services and secrets
-sudo rm /etc/nginx/sites-enabled/my-app && sudo nginx -t && sudo systemctl reload nginx
-```
-
-and delete its line from `/home/deploy/.ssh/authorized_keys`. A site that has a certificate: `sudo certbot delete --cert-name my-app.remservers.me`. On GitHub, deleting the repository does not delete its image packages (Profile, Packages); delete those too, or a later project with the same name runs into them.
+In Fleet, delete `apps/my-app/` and `clusters/rem-vm/app-my-app.yaml` in one commit, and push. Flux deletes the namespace and everything in it. On GitHub, delete the repository, and its image packages (Profile, Packages): deleting a repository does not delete them, and a later project with the same name would run into them.

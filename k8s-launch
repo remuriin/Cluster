@@ -8,15 +8,20 @@
 # The project needs a web app in frontend/ and may have a backend in backend/. A piece with its own
 # Dockerfile is used as it is; a Vite web app or a Node backend without one gets the template's.
 #
-# It asks for the SSH key's passphrase once, then for the project's name and its site. In order it:
-# checks everything it can without changing anything; makes the git repository and the GitHub
-# repository if there is none; writes the cluster files; stores the build values and the deploy key
-# on GitHub; has the VPS create the namespace, the settings, the pods, the nginx site and the
-# certificate (k8s-up-project); and, the first time only, commits, pushes and waits for the site.
+# Nothing here logs in to the VPS. The cluster follows the Fleet repo (Flux), so a launch is: the
+# project's repository on GitHub with a workflow that builds its images, a webhook that tells Flux
+# about each build, and the project's folder in Fleet. The site is <name>.remservers.me, served by
+# the generic nginx site (one wildcard certificate, nothing to set up per project).
+#
+# It asks for the project's name the first time. In order it: checks everything it can without
+# changing anything; makes the GitHub repository if there is none; writes the project's workflow
+# (and Dockerfiles where the template has them); stores the build values and the webhook on GitHub;
+# and, the first time only, commits and pushes the project, waits for its images, writes and pushes
+# its Fleet folder, and waits for the site.
 #
 # Run it again any time: every step looks before it acts. After the first launch it never commits:
-# it does its part (a backend that was added gets its pod) and leaves the commit to you.
-# --settings sends the backend's settings file again and restarts the backend to read it.
+# it does its part (a backend that was added gets its Fleet files) and leaves the commits to you.
+# --settings encrypts the backend's settings file again into Fleet (the commit is yours).
 #
 # What must be in place once: README.md, "Before the first launch".
 set -euo pipefail
@@ -25,43 +30,48 @@ die() { echo; echo "k8s-launch: $1" >&2; exit 1; }
 step() { echo; echo "== $1"; }
 
 OWNER=${K8S_GITHUB_OWNER:-remuriin}
-VPS=${K8S_VPS:-ubuntu@140.245.60.8}
-VPS_IP=${VPS#*@}
-KEY=${K8S_SSH_KEY:-$HOME/.ssh/id_rsa}
+DOMAIN=${K8S_DOMAIN:-remservers.me}
+VPS_IP=${K8S_VPS_IP:-140.245.60.8}
+HOOK_HOST=${K8S_HOOK_HOST:-https://flux.remservers.me}
+HOOK_TOKEN=${K8S_HOOK_TOKEN:-$HOME/.fleet/webhook-token}
 # where a new repository is pushed to; only the tests point this somewhere else
 GIT_BASE=${K8S_GIT_BASE:-https://github.com}
 
 NAME_RE='^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$'
-RESERVED_RE='^(default|kube-system|kube-public|kube-node-lease)$'
-SITE_RE='^([a-z0-9-]+\.)+[a-z]{2,}$'
+# names that are a site of their own, a namespace of the cluster, or an image another project uses
+RESERVED_RE='^(default|kube-.*|flux.*|flagger.*|www|api|mail|rag|raas|rag-api|remservers|rem-servers|rem-raas.*|portal|panel|status|monitor|node|learnhub.*|course-sandbox)$'
 REPO_RE='^[A-Za-z0-9._-]+$'
-IP_RE='^10\.43\.0\.[0-9]{2,3}$'
+TAG_RE='^(main|main-[0-9a-f]{40}-[0-9]+)$'
 
 # gh is a Windows program: Git Bash would rewrite any argument that starts with a slash
 gh_() { MSYS_NO_PATHCONV=1 gh "$@"; }
-# never asks for anything: the key is already unlocked for this run, or the login fails
-vps() { ssh -o BatchMode=yes "$VPS" "$@"; }
 g() { git -C "$repo" "$@"; }
+f() { git -C "$fleet" "$@"; }
 
 [[ $# -ge 1 ]] || die "usage: k8s-launch <project folder> [--settings]"
 repo=$(cd "$1" 2>/dev/null && pwd) || die "$1 is not a folder"
 resend=
 [[ "${2:-}" != --settings ]] || resend=1
 here=$(cd "$(dirname "$0")" && pwd)
+fleet=$(cd "${K8S_FLEET:-$here/../Fleet}" 2>/dev/null && pwd) || die "no Fleet folder at ${K8S_FLEET:-$here/../Fleet} (git clone https://github.com/$OWNER/Fleet.git next to this one)"
 
 # ---------------------------------------------------------------- A. checks, nothing is changed
 
 step "Looking at the project"
-for tool in git ssh ssh-agent ssh-add ssh-keygen gh curl; do
+for tool in git gh curl sops; do
   command -v "$tool" >/dev/null || die "$tool is not installed"
 done
 [[ -d "$repo/frontend" ]] || die "$repo has no frontend/ folder"
 
-# own: it has a Dockerfile. template: a stack the template has one for. none, or unknown.
+# own: it has a Dockerfile of its own. template: a stack the template has one for (or the Dockerfile
+# is the template's, written by an earlier run). none, or unknown.
 kind_of() {
   local d=$repo/$1
   [[ -d "$d" ]] || { echo none; return; }
-  [[ ! -e "$d/Dockerfile" ]] || { echo own; return; }
+  if [[ -e "$d/Dockerfile" ]]; then
+    if [[ "$(head -1 "$d/Dockerfile" | tr -d '\r')" == "$(head -1 "$here/k8s-template/$1/Dockerfile")" ]]; then echo template; else echo own; fi
+    return
+  fi
   if [[ -e "$d/package.json" && -e "$d/package-lock.json" ]] && grep -q '"build"' "$d/package.json"; then
     [[ "$1" == backend ]] || grep -q '"vite"' "$d/package.json" || { echo unknown; return; }
     echo template; return
@@ -84,17 +94,17 @@ case $apikind in
   none) echo "backend: none" ;;
 esac
 
-# a project that was launched before says who it is
-project=$(awk '/^  name:/{print $2; exit}' "$repo/k8s/namespace.yaml" 2>/dev/null || true)
-site=$(awk '/server_name/{gsub(";", "", $2); print $2; exit}' "$repo/nginx-site.conf" 2>/dev/null || true)
-if [[ -z "$project" ]]; then
-  read -r -p "Project name (lowercase letters, digits, dashes): " project
-  read -r -p "Site name [$project.remservers.me]: " site
-  [[ -n "$site" ]] || site=$project.remservers.me
-fi
-[[ "$project" =~ $NAME_RE ]] || die "the project name may only have lowercase letters, digits and dashes (30 at most)"
-[[ ! "$project" =~ $RESERVED_RE ]] || die "$project is one of the cluster's own names"
-[[ "$site" =~ $SITE_RE ]] || die "expected a site name like $project.remservers.me"
+step "Fleet"
+[[ -d "$fleet/.git" ]] || die "$fleet is not a git repository"
+[[ "$(f symbolic-ref --short HEAD 2>/dev/null)" == main ]] || die "the Fleet folder is not on the branch main"
+[[ -z "$(f status --porcelain)" ]] || die "the Fleet folder has changes that are not committed. Commit or undo them first"
+# the bot pushes to Fleet too, so it is brought up to date first
+f pull -q --rebase || die "could not update the Fleet folder (git pull --rebase)"
+recipient=$(grep -oE 'age1[0-9a-z]{58}' "$fleet/.sops.yaml" 2>/dev/null | head -1 || true)
+[[ -n "$recipient" ]] || die "Fleet has no .sops.yaml with the age public key (README.md, \"Before the first launch\")"
+hookpath=$(tr -d '\r\n' < "$fleet/projects-hook" 2>/dev/null || true)
+[[ "$hookpath" =~ ^/hook/[0-9a-f]{64}$ ]] || die "Fleet has no projects-hook file with the webhook's path (README.md, \"Before the first launch\")"
+echo "Fleet is up to date and clean"
 
 step "Git and GitHub"
 [[ "$(gh_ api user -q .login 2>/dev/null)" == "$OWNER" ]] || die "gh is not logged in as $OWNER (gh auth login)"
@@ -105,7 +115,6 @@ if [[ -d "$repo/.git" ]]; then
   origin=$(g remote get-url origin 2>/dev/null || true)
   [[ -z "$hascommits" || "$(g symbolic-ref --short HEAD 2>/dev/null)" == main ]] || die "the project is not on the branch main"
 fi
-first=1
 if [[ -n "$origin" ]]; then
   name=$(basename "$origin" .git)
   [[ "$name" =~ $REPO_RE ]] || die "cannot read the repository's name from $origin"
@@ -114,9 +123,6 @@ if [[ -n "$origin" ]]; then
   g fetch -q origin
   if g rev-parse -q --verify origin/main >/dev/null 2>&1; then
     [[ "$(g rev-list --count HEAD..origin/main)" == 0 ]] || die "GitHub has commits this folder does not. Pull first"
-    # the workflow on GitHub is the sign that this project was launched before
-    # (asked by listing the folder: Git Bash would rewrite "origin/main:path" into a Windows path)
-    [[ -z "$(g ls-tree --name-only origin/main -- .github/workflows/image.yml)" ]] || first=
   fi
   echo "repository: $OWNER/$name"
 else
@@ -128,42 +134,38 @@ else
 fi
 slug=$OWNER/$name
 
-# the VPS runs these scripts as root, from GitHub: what runs there must be what is here
-[[ -z "$(git -C "$here" status --porcelain)" ]] || die "the Cluster folder has changes that are not committed"
-git -C "$here" fetch -q origin
-[[ "$(git -C "$here" rev-parse HEAD)" == "$(git -C "$here" rev-parse origin/main)" ]] || die "the Cluster folder is not pushed (or not pulled)"
+# a project launched before has a folder in Fleet whose namespace carries this repository's mark
+mark=$(sed 's/[.]/[.]/g' <<<"remservers.me/repo: $slug")
+# (a Fleet folder on Windows may hold its files with Windows line endings: a \r at the end is allowed)
+nsfile=$(grep -lE "^    $mark"$'\r'"?\$" "$fleet"/apps/*/namespace.yaml 2>/dev/null | head -1 || true)
+project=
+[[ -z "$nsfile" ]] || project=$(basename "$(dirname "$nsfile")")
+first=1
+if [[ -n "$project" ]]; then
+  first=
+  echo "launched before as $project"
+else
+  read -r -p "Project name, also the site's name (lowercase letters, digits, dashes): " project
+  [[ "$project" =~ $NAME_RE ]] || die "the project name may only have lowercase letters, digits and dashes (30 at most)"
+  [[ ! "$project" =~ $RESERVED_RE ]] || die "$project is taken by a site or a part of the cluster. Pick another name"
+  [[ ! -e "$fleet/apps/$project" ]] || die "$project is already in Fleet, for another repository. Pick another name"
+fi
+site=$project.$DOMAIN
 
-step "The VPS"
-! ssh-keygen -y -P "" -f "$KEY" >/dev/null 2>&1 || die "the SSH key $KEY has no passphrase. Give it one first: ssh-keygen -p -f $KEY"
-eval "$(ssh-agent -s)" >/dev/null
-trap 'ssh-agent -k >/dev/null 2>&1 || true' EXIT
-# held in memory for a quarter of an hour at most, and gone when this script ends
-ssh-add -t 900 "$KEY" || die "the key was not unlocked"
-vpsrev=$(vps "cd /opt/cluster && sudo git pull -q --ff-only && sudo git rev-parse HEAD" </dev/null) || die "could not reach the VPS, or /opt/cluster could not be updated"
-[[ "$vpsrev" == "$(git -C "$here" rev-parse HEAD)" ]] || die "the VPS does not have this version of the Cluster scripts"
-found=$(vps "sudo bash /opt/cluster/k8s-up-project check $project $slug $site" </dev/null) || die "the VPS refused (see the line above)"
-val() { sed -n "s/^$1=//p" <<<"$found" | head -1; }
-state=$(val state) haskey=$(val key) web=$(val web) api=$(val api) hassecret=$(val secret)
-# what came back is checked like anything else that comes from outside
-[[ "$state" =~ ^(new|own)$ && "$haskey" =~ ^(yes|no)$ && "$hassecret" =~ ^(yes|no)$ && "$web" =~ $IP_RE && "$api" =~ $IP_RE ]] \
-  || die "the VPS gave an answer this does not understand"
-[[ "$apikind" != none ]] || api=
-echo "namespace $project: $([[ $state == new ]] && echo "free" || echo "this project's own"), web $web${api:+, backend $api}"
-
-# the name has to lead to the VPS itself, not to Cloudflare's proxy, or the certificate cannot be issued
+# the name must lead to the VPS itself (the wildcard record, not behind Cloudflare's proxy)
 reached=$(curl -s -o /dev/null -m 10 -w '%{remote_ip}' "http://$site/" || true)
-[[ "$reached" == "$VPS_IP" ]] || die "$site does not lead to the VPS (it leads to ${reached:-nowhere}). Check the DNS record"
+[[ "$reached" == "$VPS_IP" ]] || die "$site does not lead to the VPS (it leads to ${reached:-nowhere}). Check the DNS record *.$DOMAIN"
 
 # the backend's settings: the production file if there is one
 envfile=
 if [[ "$apikind" != none ]]; then
-  for f in "$repo/backend/.env.production" "$repo/backend/.env"; do
-    [[ ! -f "$f" ]] || { envfile=$f; break; }
+  for e in "$repo/backend/.env.production" "$repo/backend/.env"; do
+    [[ ! -f "$e" ]] || { envfile=$e; break; }
   done
 fi
 if [[ -n "$envfile" ]]; then
   # a line is reported by its number only, never by what it holds
-  bad=$(grep -nvE '^[[:space:]]*(#.*)?$|^[A-Za-z_][A-Za-z0-9_]*=' "$envfile" | cut -d: -f1 | tr '\n' ' ' || true)
+  bad=$(tr -d '\r' < "$envfile" | grep -nvE '^[[:space:]]*(#.*)?$|^[A-Za-z_][A-Za-z0-9_]*=' | cut -d: -f1 | tr '\n' ' ' || true)
   [[ -z "$bad" ]] || die "${envfile#"$repo"/}: line(s) $bad are not NAME=value"
   quoted=$(grep -E "^[A-Za-z_][A-Za-z0-9_]*=[\"']" "$envfile" | cut -d= -f1 | tr '\n' ' ' || true)
   local_=$(grep -E '^[A-Za-z_][A-Za-z0-9_]*=.*(localhost|127\.0\.0\.1)' "$envfile" | cut -d= -f1 | tr '\n' ' ' || true)
@@ -171,23 +173,25 @@ if [[ -n "$envfile" ]]; then
   [[ -z "$quoted" ]] || echo "  note: quoted values are stored with their quotes: $quoted"
   [[ -z "$local_" ]] || echo "  note: inside a pod \"localhost\" is the pod itself, not the VPS: $local_"
 fi
-# sent when the project has no settings yet, or when asked
+a=$fleet/apps/$project
+# encrypted into Fleet: at the first launch, when a backend arrives later, or when asked
 send=
-[[ -z "$envfile" ]] || { [[ "$hassecret" == no || -n "$resend" ]] && send=1; }
+if [[ -n "$envfile" ]]; then
+  [[ -z "$first" && -e "$a/backend.env" && -z "$resend" ]] || send=1
+fi
+hasenv=
+[[ -z "$send" && ! -e "$a/backend.env" ]] || hasenv=1
 
-# a web app with a Dockerfile and no cluster file yet brought that Dockerfile itself
-ownweb=
-[[ "$webkind" != own || -e "$repo/k8s/web.yaml" ]] || ownweb=1
-# what a piece's pod needs to know. A project launched before says it in its own cluster file.
+# what a piece's pod needs to know. A project launched before says it in its own Fleet file.
 knobs=()
 knobs_of() { # $1 web|api, $2 its own Dockerfile or not
-  local f=$repo/k8s/$1.yaml port health user mem dport dhealth duser dmem
+  local file=$a/$1.yaml port health user mem dport dhealth duser dmem
   if [[ $1 == web ]]; then dport=8080 dhealth=/healthz duser= dmem=64; else dport=3000 dhealth=/ duser=1000 dmem=256; fi
-  if [[ -e "$f" ]]; then
-    port=$(awk '/containerPort:/{print $3; exit}' "$f")
-    health=$(awk '/^ +path:/{print $2; exit}' "$f")
-    user=$(awk '/runAsUser:/{print $2; exit}' "$f")
-    mem=$(awk '/^ +memory:/{v=$2} END{sub("Mi", "", v); print v}' "$f")
+  if [[ -e "$file" ]]; then
+    port=$(tr -d '\r' < "$file" | awk '/containerPort:/{print $3; exit}')
+    health=$(tr -d '\r' < "$file" | awk '/^ +path:/{print $2; exit}')
+    user=$(tr -d '\r' < "$file" | awk '/runAsUser:/{print $2; exit}')
+    mem=$(tr -d '\r' < "$file" | awk '/^ +memory:/{v=$2} END{sub("Mi", "", v); print v}')
   elif [[ $2 == own ]]; then
     echo "The $([[ $1 == web ]] && echo "web app" || echo backend) has its own Dockerfile, so four things about its image:"
     read -r -p "  port it listens on [$dport]: " port
@@ -202,18 +206,19 @@ knobs_of() { # $1 web|api, $2 its own Dockerfile or not
 }
 knobs_of web "$webkind"
 [[ "$apikind" == none ]] || knobs_of api "$apikind"
-for pair in "${knobs[@]}"; do
-  # they travel inside an SSH command, so only what a port, a path, a number can hold
-  [[ "$pair" =~ ^(web|api)-(port|health|user|mem)=[A-Za-z0-9._/-]*$ ]] || die "not a usable value: $pair"
-done
 
 # values the web app's build writes into the JavaScript: public by nature
 vitefile=
-for f in "$repo/frontend/.env.production" "$repo/frontend/.env"; do
-  [[ ! -f "$f" ]] || { vitefile=$f; break; }
+for e in "$repo/frontend/.env.production" "$repo/frontend/.env"; do
+  [[ ! -f "$e" ]] || { vitefile=$e; break; }
 done
 vite=()
 [[ -z "$vitefile" ]] || mapfile -t vite < <(grep -E '^VITE_[A-Z0-9_]+=' "$vitefile" | tr -d '\r' || true)
+
+# the webhook is signed with the token Flux has; only needed if the repository has no webhook yet
+hashook=
+if [[ -n "$origin" ]] && gh_ api "repos/$slug/hooks" -q '.[].config.url' 2>/dev/null | grep -q "^$HOOK_HOST/hook/"; then hashook=1; fi
+[[ -n "$hashook" || -s "$HOOK_TOKEN" ]] || die "the webhook secret $HOOK_TOKEN is missing (README.md, \"Before the first launch\")"
 
 # ---------------------------------------------------------------- B. on this PC only
 
@@ -250,15 +255,15 @@ fi
 
 echo
 echo "About to launch:"
-echo "  project     $project  ($([[ $state == new ]] && echo "new" || echo "already in the cluster"))"
+echo "  project     $project  ($([[ -n "$first" ]] && echo "new" || echo "launched before"))"
 echo "  site        https://$site"
 echo "  repository  https://github.com/$slug  ($([[ -n "$origin" ]] && echo "exists" || echo "will be created, PUBLIC"))"
-echo "  pods        web $web${api:+, backend $api}"
+if [[ "$apikind" == none ]]; then echo "  pieces      web app"; else echo "  pieces      web app and backend"; fi
 [[ ${#vite[@]} -eq 0 ]] || { echo "  build values, public in the built site (from ${vitefile#"$repo"/}):"; printf '    %s\n' "${vite[@]}"; }
-[[ -z "$send" ]] || echo "  the backend's settings will be sent from ${envfile#"$repo"/}"
+[[ -z "$send" ]] || echo "  the backend's settings will be encrypted into Fleet from ${envfile#"$repo"/}"
 if [[ -n "$first" ]]; then
-  if [[ -n "$hascommits" ]]; then echo "  it will commit the cluster files and push"
-  else echo "  it will commit $(g ls-files -co --exclude-standard | wc -l | tr -d ' ') files (the whole project) and push"; fi
+  if [[ -n "$hascommits" ]]; then echo "  it will commit the project's new files and push, then commit its Fleet folder and push"
+  else echo "  it will commit $(g ls-files -co --exclude-standard | wc -l | tr -d ' ') files (the whole project) and push, then its Fleet folder"; fi
 else
   echo "  it will not commit: this project was launched before"
 fi
@@ -273,8 +278,10 @@ if [[ -z "$origin" ]]; then
   g remote add origin "$GIT_BASE/$slug.git"
 fi
 
-step "Writing the cluster files"
-written=$(bash "$here/k8s-new-project" "$repo" "$project" "$site" "$web" "${api:--}" "${knobs[@]}")
+step "Writing the project's files"
+pieces=()
+[[ "$apikind" == none ]] || pieces=(api)
+written=$(bash "$here/k8s-new-project" repo "$repo" "$project" "${pieces[@]}" "${knobs[@]}")
 echo "$written" | sed 's/^/  /'
 wrote() { grep -qE "^(wrote|rewrote) $1\$" <<<"$written"; }
 
@@ -291,78 +298,109 @@ if [[ ${#vite[@]} -gt 0 ]]; then
     sed -i -e '/^          #   VITE_API_URL=/d' -e "s~^          # build-args: |\$~          build-args: |\n${lines%\\n}~" "$repo/.github/workflows/image.yml"
   fi
   echo "  build values stored on GitHub: $(printf '%s ' "${vite[@]%%=*}")"
-  [[ -z "$ownweb" ]] || echo "  note: the web app has its own Dockerfile; it needs an ARG line for each of them"
+  [[ "$webkind" != own ]] || echo "  note: the web app has its own Dockerfile; it needs an ARG line for each of them"
 fi
 
-if [[ "$haskey" == no ]] || ! gh_ secret list -R "$slug" 2>/dev/null | grep -q '^DEPLOY_KEY'; then
-  step "The deploy key"
-  # made on the VPS, handed to GitHub, never written to this PC's disk and never shown
-  key=$(vps "sudo bash /opt/cluster/k8s-add-project $([[ $haskey == no ]] || echo --replace) $project" </dev/null \
-        | sed -n '/BEGIN OPENSSH PRIVATE KEY/,/END OPENSSH PRIVATE KEY/p')
-  [[ "$key" == *"BEGIN OPENSSH PRIVATE KEY"*"END OPENSSH PRIVATE KEY"* ]] || die "the VPS did not hand back a key"
-  printf '%s\n' "$key" | gh_ secret set DEPLOY_KEY -R "$slug" >/dev/null
-  unset key
-  echo "  stored as the repository's secret DEPLOY_KEY"
+if [[ -z "$hashook" ]]; then
+  step "The webhook that tells Flux about each build"
+  # the secret goes from its file to GitHub, never onto a command line or the screen
+  gh_ api "repos/$slug/hooks" -f name=web -F active=true -f 'events[]=workflow_run' \
+    -f "config[url]=$HOOK_HOST$hookpath" -f 'config[content_type]=json' -F "config[secret]=@$HOOK_TOKEN" >/dev/null
+  echo "  $HOOK_HOST/hook/... on every workflow run"
 fi
 
-step "On the VPS: namespace, settings, pods, nginx site, certificate"
-mode=keep
-[[ -z "$resend" ]] || mode=replace
-code=0
-if [[ -n "$send" ]]; then
-  vps "sudo bash /opt/cluster/k8s-up-project apply $project $slug $site $web ${api:--} $mode ${knobs[*]}" < "$envfile" || code=$?
+# the images the pods start with
+webtag= apitag=
+if [[ -n "$first" ]]; then
+  step "First commit and push of the project"
+  if [[ -n "$hascommits" ]]; then
+    mapfile -t add < <(sed -nE 's/^(wrote|rewrote) //p' <<<"$written")
+    g -c core.safecrlf=false add -- .gitignore "${add[@]}"
+    # a run after a failed first build has nothing new to commit: it goes on from the push
+    g diff --cached --quiet || g commit -q -m "build workflow: the project is launched"
+  else
+    g -c core.safecrlf=false add -A
+    g commit -q -m "first commit, with the build workflow"
+  fi
+  g push -q -u origin main
+  sha=$(g rev-parse HEAD)
+  echo "  pushed ${sha:0:7}"
+
+  step "Waiting for the images"
+  run=
+  for _ in $(seq 1 30); do
+    run=$(gh_ run list -R "$slug" --commit "$sha" --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
+    [[ -z "$run" ]] || break
+    sleep 3
+  done
+  [[ -n "$run" ]] || die "no pipeline run appeared for this push. Look at https://github.com/$slug/actions"$'\n'"Run this again once it is green: it continues from there"
+  gh_ run watch "$run" -R "$slug" --exit-status >/dev/null 2>&1 \
+    || die "the pipeline run failed: https://github.com/$slug/actions/runs/$run"$'\n'"Fix the cause and push. Then run this again: it continues from there"
+  echo "  the run is green"
+  # the tag the workflow gave this build: the commit, and the commit's own time
+  tag=main-$sha-$(g show -s --format=%ct "$sha")
+  webtag=$tag
+  [[ "$apikind" == none ]] || apitag=$tag
 else
-  vps "sudo bash /opt/cluster/k8s-up-project apply $project $slug $site $web ${api:--} $mode ${knobs[*]}" </dev/null || code=$?
+  webtag=$(sed -nE 's~.*-web:([^ ]+) # \{"\$imagepolicy".*~\1~p' "$a/web.yaml" | head -1)
+  apitag=
+  if [[ "$apikind" != none ]]; then
+    apitag=$(sed -nE 's~.*-api:([^ ]+) # \{"\$imagepolicy".*~\1~p' "$a/api.yaml" 2>/dev/null | head -1 || true)
+    # a backend added after the launch has no image yet: its pod waits for the first build
+    [[ -n "$apitag" ]] || apitag=main
+  fi
 fi
-[[ $code -eq 0 ]] || die "the VPS part stopped (see above). Fix the cause and run this again; it continues where it stopped"
+[[ "$webtag" =~ $TAG_RE && ( -z "$apitag" || "$apitag" =~ $TAG_RE ) ]] || die "could not tell which images to run (from $a/web.yaml)"
+
+step "The project's folder in Fleet"
+fleetargs=("$name" "$webtag")
+[[ -z "$apitag" ]] || fleetargs+=("$apitag")
+[[ -z "$hasenv" ]] || fleetargs+=(env)
+fwritten=$(bash "$here/k8s-new-project" fleet "$fleet" "$project" "${fleetargs[@]}" "${knobs[@]}")
+echo "$fwritten" | sed 's/^/  /'
+if [[ -n "$send" ]]; then
+  # SOPS encrypts each value with the cluster's public key: only the cluster can read the result.
+  # The plain copy (Windows line endings taken out) lives a moment in a folder only you can read.
+  mkdir -p "$HOME/.fleet"
+  tmpdir=$(mktemp -d "$HOME/.fleet/tmp.XXXXXX")
+  trap 'rm -rf "$tmpdir"' EXIT
+  chmod 700 "$tmpdir"
+  tr -d '\r' < "$envfile" > "$tmpdir/backend.env"
+  sops -e --input-type dotenv --output-type dotenv --age "$recipient" "$tmpdir/backend.env" > "$a/backend.env.new" \
+    || { rm -f "$a/backend.env.new"; die "sops could not encrypt the settings"; }
+  rm -rf "$tmpdir"
+  mv "$a/backend.env.new" "$a/backend.env"
+  echo "  encrypted the backend's settings into apps/$project/backend.env"
+fi
 
 if [[ -z "$first" ]]; then
-  step "Done on the VPS. The commit is yours"
+  step "Done. The commits are yours"
   changes=$(g status --short)
-  if [[ -n "$changes" ]]; then
-    echo "$changes" | sed 's/^/  /'
-    echo "Look at them (git diff), commit and push. Until the push, a new pod waits for its image"
-    [[ -z "$api" ]] || echo "(a backend that was just added answers 502 at /api until then)."
+  fchanges=$(f status --short)
+  [[ -z "$changes" ]] || { echo "In the project:"; echo "$changes" | sed 's/^/  /'; }
+  [[ -z "$fchanges" ]] || { echo "In Fleet:"; echo "$fchanges" | sed 's/^/  /'; }
+  if [[ -z "$changes$fchanges" ]]; then
+    echo "Nothing changed."
   else
-    echo "Nothing changed in the project."
+    echo "Look at them (git diff), commit and push: the project first, then Fleet (git pull --rebase before)."
+    [[ "$apitag" != main ]] || echo "A backend that was just added runs once its first build is done: until then /api answers nothing."
   fi
   exit 0
 fi
 
-step "First commit and push"
-if [[ -n "$hascommits" ]]; then
-  mapfile -t add < <(sed -nE 's/^(wrote|rewrote) //p' <<<"$written")
-  g -c core.safecrlf=false add -- .gitignore "${add[@]}"
-  g commit -q -m "cluster files: the project is launched"
-else
-  g -c core.safecrlf=false add -A
-  g commit -q -m "first commit, with the cluster files"
-fi
-g push -q -u origin main
-sha=$(g rev-parse HEAD)
-echo "  pushed ${sha:0:7}"
+step "First commit and push of the Fleet folder"
+f -c core.safecrlf=false add -- "apps/$project" "clusters/rem-vm/app-$project.yaml"
+f commit -q -m "launch $project ($slug)"
+f push -q origin main || { f pull -q --rebase && f push -q origin main; } || die "could not push Fleet. Look at it (git status), push it yourself, and the project goes live"
+echo "  pushed"
 
-step "Waiting for the pipeline"
-run=
-for _ in $(seq 1 30); do
-  run=$(gh_ run list -R "$slug" --commit "$sha" --json databaseId -q '.[0].databaseId' 2>/dev/null || true)
-  [[ -z "$run" ]] || break
-  sleep 3
+step "Waiting for the site"
+code=
+for _ in $(seq 1 40); do
+  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$site/" || true)
+  [[ "$code" != 200 ]] || break
+  sleep 5
 done
-[[ -n "$run" ]] || die "no pipeline run appeared for this push. Look at https://github.com/$slug/actions"
-if ! gh_ run watch "$run" -R "$slug" --exit-status >/dev/null 2>&1; then
-  # the one cause this can name by itself: an image the cluster is not allowed to download
-  token=$(curl -s -m 10 "https://ghcr.io/token?scope=repository:$OWNER/$project-web:pull" | sed -E 's/.*"token":"([^"]+)".*/\1/' || true)
-  public=$(curl -s -o /dev/null -m 10 -w '%{http_code}' -H "Authorization: Bearer $token" \
-    -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
-    "https://ghcr.io/v2/$OWNER/$project-web/manifests/$sha" || true)
-  [[ "$public" == 200 ]] || echo "The image is not public. On GitHub: your profile, Packages, $project-web, Package settings, Change visibility."
-  die "the pipeline run failed: https://github.com/$slug/actions/runs/$run"$'\n'"Fix the cause, then re-run the failed job there (or: gh run rerun $run --failed -R $slug)"
-fi
-echo "  the run is green"
-
-code=$(curl -s -o /dev/null -m 20 -w '%{http_code}' "https://$site/" || true)
-[[ "$code" == 200 ]] || die "the pipeline is green but https://$site/ answers ${code:-nothing}"
+[[ "$code" == 200 ]] || die "Fleet is pushed but https://$site/ answers ${code:-nothing} after 3 minutes. On the VPS: sudo flux get kustomizations app-$project"
 step "Live: https://$site"
-echo "From now on a push to main deploys it. Add the project to Kubernetes-and-pipeline.md:"
-echo "  | \`$project\` | \`web\` | ... | \`$web\` | \`$site/\` |${api:+  and \`api\` at \`$api\`}"
+echo "From now on a push to main deploys it. To take it out: delete apps/$project/ and clusters/rem-vm/app-$project.yaml from Fleet in one commit."

@@ -1,9 +1,11 @@
-# The web app: "keep one pod of its image running", and a fixed address for that pod.
+# The web app: "keep one pod of its image running", and a Service in front of it. nginx finds it as
+# web.app-PROJECT, so no address is chosen by hand. Flux's image automation keeps the image line on
+# the newest build of main (the marker at its end).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: web
-  namespace: PROJECT
+  namespace: app-PROJECT
 spec:
   replicas: 1
   selector:
@@ -14,11 +16,10 @@ spec:
       labels:
         app: web
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: web
-          # ":main" is the newest build of the main branch. The pipeline replaces it with one exact commit.
-          image: ghcr.io/remuriin/PROJECT-web:main
-          imagePullPolicy: Always
+          image: ghcr.io/remuriin/PROJECT-web:WEB_TAG # {"$imagepolicy": "flux-system:app-PROJECT-web"}
           ports:
             - containerPort: WEB_PORT
           # traffic is only sent to the pod once this answers
@@ -43,16 +44,12 @@ spec:
             capabilities:
               drop: ["ALL"]
 ---
-# The address is chosen by hand so the VPS's nginx can be pointed at it once and for all.
-# It exists only inside the VPS.
 apiVersion: v1
 kind: Service
 metadata:
   name: web
-  namespace: PROJECT
+  namespace: app-PROJECT
 spec:
-  type: ClusterIP
-  clusterIP: WEB_IP
   selector:
     app: web
   ports:

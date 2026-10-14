@@ -1,0 +1,23 @@
+# PROJECT (repo remuriin/REPO), launched with k8s-launch: Flux applies apps/PROJECT and keeps the
+# cluster equal to it. Deleting this file together with apps/PROJECT/ removes the project from the
+# cluster: its namespace and everything in it.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: app-PROJECT
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 1m
+  wait: true
+  timeout: 3m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  path: ./apps/PROJECT
+  prune: true
+  # the backend's settings are encrypted in the repo; this key, in the cluster only, opens them
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age

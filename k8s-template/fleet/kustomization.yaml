@@ -1,0 +1,19 @@
+# What Flux applies for this project. No "namespace:" here: the image objects stay in flux-system.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - web.yaml
+  # api:begin
+  - api.yaml
+  # api:end
+  - images.yaml
+# env:begin
+# The backend's settings, encrypted with SOPS. Flux decrypts them and makes the Secret backend-env.
+# Its name gets a short hash of the values, so new settings restart the backend by themselves.
+secretGenerator:
+  - name: backend-env
+    namespace: app-PROJECT
+    envs:
+      - backend.env
+# env:end
