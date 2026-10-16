@@ -11,7 +11,7 @@
 # Nothing here logs in to the VPS. The cluster follows the Fleet repo (Flux), so a launch is: the
 # project's repository on GitHub with a workflow that builds its images, a webhook that tells Flux
 # about each build, and the project's folder in Fleet. The site is <name>.remservers.me, served by
-# the generic nginx site (one wildcard certificate, nothing to set up per project).
+# the front door through the project's own route (one wildcard certificate, nothing else per project).
 #
 # It asks for the project's name the first time. In order it: checks everything it can without
 # changing anything; makes the GitHub repository if there is none; writes the project's workflow

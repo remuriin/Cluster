@@ -1,6 +1,5 @@
-# The box that holds everything of this project in the cluster. Its name starts with app-, which is
-# what lets the generic nginx site reach it at PROJECT.remservers.me; the label lets its route
-# (route.yaml) attach to the front door. The mark says which repository it belongs to: k8s-launch reads
+# The box that holds everything of this project in the cluster. The label lets its route (route.yaml)
+# attach to the front door at PROJECT.remservers.me. The mark says which repository it belongs to: k8s-launch reads
 # it back to know a project it launched before.
 apiVersion: v1
 kind: Namespace

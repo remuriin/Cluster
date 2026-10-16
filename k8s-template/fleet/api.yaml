@@ -1,5 +1,5 @@
-# The backend: "keep one pod of its image running", and a Service in front of it. nginx sends
-# PROJECT.remservers.me/api to api.app-PROJECT.
+# The backend: "keep one pod of its image running", and a Service in front of it. The front door
+# sends PROJECT.remservers.me/api to it (route.yaml).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

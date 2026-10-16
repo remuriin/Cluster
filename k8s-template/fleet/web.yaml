@@ -1,5 +1,5 @@
-# The web app: "keep one pod of its image running", and a Service in front of it. nginx finds it as
-# web.app-PROJECT, so no address is chosen by hand. Flux's image automation keeps the image line on
+# The web app: "keep one pod of its image running", and a Service in front of it. The front door
+# finds it by name (route.yaml), so no address is chosen by hand. Flux's image automation keeps the image line on
 # the newest build of main (the marker at its end).
 apiVersion: apps/v1
 kind: Deployment

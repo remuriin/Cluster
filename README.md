@@ -1,6 +1,6 @@
 # Cluster
 
-What every project of mine shares to run in the Kubernetes cluster (k3s) on the VPS: the one command that launches a project, the template a project's files are made from, and the nginx sites in front of the cluster.
+What every project of mine shares to run in the Kubernetes cluster (k3s) on the VPS: the one command that launches a project, and the template a project's files are made from. The front door (Envoy Gateway, with its certificates) is in Fleet's `infrastructure/`.
 
 What runs in the cluster is decided by the private repository `Fleet`: Flux, inside the cluster, applies whatever it says. A project's own repository holds its code, its Dockerfiles and the workflow that builds its images. Nothing logs in to the VPS to deploy.
 
@@ -9,7 +9,6 @@ What runs in the cluster is decided by the private repository `Fleet`: Flux, ins
 | `k8s-launch` | PC, Git Bash | **The one command.** Takes a project that exists and builds, and makes it a live site that deploys on push |
 | `k8s-new-project` | PC | Fills in `k8s-template/` for one project: its own files, and its folder in Fleet. Run by `k8s-launch` |
 | `k8s-template/` | | The files a project needs (`fleet/` is its folder in Fleet), and `README.md`, the same launch done by hand |
-| `nginx/` | VPS, `/etc/nginx/sites-available/` | The sites in front of the cluster: `projects` (every launched project), `flux` (GitHub's webhooks to Flux), `rem-servers` (the portal) |
 | `*.test.sh` | PC | The scripts' checks |
 
 ## Launching a project
@@ -30,7 +29,7 @@ It asks for a repository name if the folder is not on GitHub yet, and for the pr
 6. writes the project's folder in Fleet with those images (`k8s-new-project fleet`), encrypts the backend's settings into it, commits and pushes Fleet;
 7. waits for the site.
 
-Flux sees the Fleet commit within seconds (a webhook), creates the namespace `app-<name>` and the pods, and the generic nginx site `projects` serves `<name>.remservers.me` with the wildcard certificate. No nginx file, certificate or DNS record per project.
+Flux sees the Fleet commit within seconds (a webhook), creates the namespace `app-<name>`, the pods and the project's route (`route.yaml`), and the front door serves `<name>.remservers.me` with the wildcard certificate. No certificate or DNS record per project.
 
 **What the project must be**
 
@@ -63,12 +62,12 @@ Flux sees the Fleet commit within seconds (a webhook), creates the namespace `ap
 2. **SOPS and age on the PC**: `winget install --id SecretsOPerationS.SOPS -e` and `winget install --id FiloSottile.age -e`.
 3. **Fleet next to this folder**: `git clone https://github.com/remuriin/Fleet.git`. It holds `.sops.yaml` (the cluster's age public key) and `projects-hook` (the path of the shared webhook), which the launch reads.
 4. **The webhook secret** in `~/.fleet/webhook-token`, the same one the cluster has (Secret `webhook-token` in `flux-system`).
-5. In place already, on the VPS and in Cloudflare: the wildcard DNS record `*.remservers.me` ("DNS only"), the wildcard certificate, the nginx sites `projects` and `flux`, and the catch-all `000-catch-all` (unknown names get no answer).
+5. In place already, in Cloudflare and in Fleet: the wildcard DNS record `*.remservers.me` ("DNS only"), and the front door with its wildcard certificate and the `flux.remservers.me` route for webhooks (Fleet's `infrastructure/configs/`). A name no project claims gets an empty 404.
 
 ### What keeps it safe
 
 - Nothing logs in to the VPS: not the launch, not a pipeline. The cluster pulls from Fleet and from ghcr.io.
-- A project lives in `app-<name>`, and nginx only reaches namespaces with that prefix, so no other namespace can become public by accident.
+- A project lives in `app-<name>`. Only namespaces with the label `remservers.me/gateway: "true"` may attach a route to the front door, so no other namespace can become public by accident.
 - A namespace is marked with the repository it was made for. A second repository cannot launch under a name that is taken.
 - The backend's settings are in Fleet only encrypted. The key that opens them is in the cluster (and in my password manager), never in a repository.
 - The webhook secret goes from its file to GitHub, never onto a command line or the screen. A webhook call can only ask Flux to look now.
