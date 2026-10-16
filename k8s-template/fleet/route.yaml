@@ -1,0 +1,95 @@
+# PROJECT.remservers.me at the front door (Envoy, the Gateway "public" in Fleet's
+# infrastructure/configs): / goes to the web app, /api to the backend. The certificate is the wildcard
+# for *.remservers.me, so a new name needs nothing else.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: site
+  namespace: app-PROJECT
+spec:
+  parentRefs:
+    - name: public
+      namespace: envoy-gateway-system
+      sectionName: https
+  hostnames:
+    - PROJECT.remservers.me
+  rules:
+    # api:begin
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      backendRefs:
+        - name: api
+          port: 80
+      # Envoy's default is 15 s
+      timeouts:
+        request: 60s
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: max-age=63072000; includeSubDomains
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: X-Frame-Options
+                value: DENY
+              - name: Referrer-Policy
+                value: strict-origin-when-cross-origin
+              - name: Permissions-Policy
+                value: camera=(), microphone=(), geolocation=()
+    # api:end
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web
+          port: 80
+      timeouts:
+        request: 60s
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            set:
+              - name: Strict-Transport-Security
+                value: max-age=63072000; includeSubDomains
+              - name: X-Content-Type-Options
+                value: nosniff
+              - name: X-Frame-Options
+                value: DENY
+              - name: Referrer-Policy
+                value: strict-origin-when-cross-origin
+              - name: Permissions-Policy
+                value: camera=(), microphone=(), geolocation=()
+---
+# per visitor address: 20 a second and 300 a minute (counted by the ratelimit pod in Valkey)
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: site
+  namespace: app-PROJECT
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: site
+  rateLimit:
+    type: Global
+    global:
+      rules:
+        - clientSelectors:
+            - sourceCIDR:
+                type: Distinct
+                value: 0.0.0.0/0
+          limit:
+            requests: 20
+            unit: Second
+        - clientSelectors:
+            - sourceCIDR:
+                type: Distinct
+                value: 0.0.0.0/0
+          limit:
+            requests: 300
+            unit: Minute

@@ -103,6 +103,7 @@ lacks() { # $1 where it is
   case $1 in
     .github/workflows/image.yml) [[ -n "$api" ]] && ! grep -q -- "$project-api:" "$dir/$1" ;;
     apps/*/images.yaml) [[ -n "$api" ]] && ! grep -q -- "-api$" "$dir/$1" ;;
+    apps/*/route.yaml) [[ -n "$api" ]] && ! grep -q -- "name: api$" "$dir/$1" ;;
     apps/*/kustomization.yaml) { [[ -n "$api" ]] && ! grep -q -- "- api.yaml" "$dir/$1"; } || { [[ -n "$env" ]] && ! grep -q "secretGenerator" "$dir/$1"; } ;;
     *) return 1 ;;
   esac
@@ -117,7 +118,7 @@ if [[ $mode == repo ]]; then
   [[ -z "$api" || -e "$dir/backend/Dockerfile" ]] || pairs+=(backend/Dockerfile backend/Dockerfile backend/.dockerignore backend/.dockerignore)
 else
   a=apps/$project
-  pairs+=(fleet/namespace.yaml "$a/namespace.yaml" fleet/web.yaml "$a/web.yaml" fleet/images.yaml "$a/images.yaml"
+  pairs+=(fleet/namespace.yaml "$a/namespace.yaml" fleet/web.yaml "$a/web.yaml" fleet/route.yaml "$a/route.yaml" fleet/images.yaml "$a/images.yaml"
           fleet/kustomization.yaml "$a/kustomization.yaml" fleet/flux.yaml "clusters/rem-vm/app-$project.yaml")
   [[ -z "$api" ]] || pairs+=(fleet/api.yaml "$a/api.yaml")
 fi

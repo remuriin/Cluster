@@ -88,4 +88,4 @@ bash k8s-launch.test.sh          # k8s-launch, from end to end
 
 Both need only bash and git. They put pretend programs (`gh`, `sops`, `curl`) in place of the real ones, keep GitHub and Fleet as folders, and keep every file in a throwaway folder.
 
-Until 2026-10-15 a pipeline deployed by logging in to the VPS over SSH as the user `deploy` and running `k8s-deploy`, and a launch ran `k8s-up-project` on the VPS. Flux replaced both; the git history before that date has them.
+Until 2026-10-14 a pipeline deployed by logging in to the VPS over SSH as the user `deploy` and running `k8s-deploy`, and a launch ran `k8s-up-project` on the VPS. Flux replaced both; the git history before that date has them.

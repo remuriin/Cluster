@@ -4,6 +4,7 @@ kind: Kustomization
 resources:
   - namespace.yaml
   - web.yaml
+  - route.yaml
   # api:begin
   - api.yaml
   # api:end
