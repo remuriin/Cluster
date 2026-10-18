@@ -4,7 +4,9 @@
 
 It fits a repository shaped like `RaaS` and `RemServers`: a web app in `frontend/` (built with `npm run build` into `dist/`) and, optionally, a Node backend in `backend/` (`npm run build` into `dist/`, started with `node dist/server.js` on port 3000). A piece that brings its own Dockerfile keeps it; `k8s-new-project` then takes the port, the health address, the user number and the memory ceiling as settings (its first lines say how).
 
-How the cluster, Flux and the pipeline work is written up in `Kubernetes-and-pipeline.md`.
+A backend with no web app (an API only) fits too: it gets the whole site. Use `api-only` in both commands below (step 1 and step 4 show how).
+
+How the cluster, Flux and the pipeline work is written up in `DevLogs/cluster/Kubernetes-and-pipeline.md`.
 
 ## Before you start
 
@@ -18,6 +20,8 @@ From the `Cluster` folder. Leave `api` out for a project with no backend.
 ```bash
 ./k8s-new-project repo ../MyApp my-app api
 ```
+
+An API only: `./k8s-new-project repo ../MyApi my-api api-only` (no web app files, no web part in the workflow).
 
 It writes `.github/workflows/image.yml`, and `frontend/Dockerfile`, `frontend/nginx.conf`, `frontend/.dockerignore` (and with a backend `backend/Dockerfile`, `backend/.dockerignore`) for each piece that has no Dockerfile. A file that exists is kept, and it commits nothing.
 
@@ -43,7 +47,7 @@ The first run of the workflow builds the images. Note the commit (`git rev-parse
 ./k8s-new-project fleet ../Fleet my-app MyApp main-<commit>-<time> main-<commit>-<time> env
 ```
 
-(the second tag is the backend's; `env` only if the backend has settings). It writes `apps/my-app/` (namespace, Deployments, Services, the images Flux watches, the list of them) and `clusters/rem-vm/app-my-app.yaml` (the line that tells Flux to apply that folder).
+(the second tag is the backend's; `env` only if the backend has settings). An API only has one tag, the backend's: `./k8s-new-project fleet ../Fleet my-api MyApi api-only main-<commit>-<time> env`. Its folder has no `web.yaml`, and its route sends the whole site to the backend. It writes `apps/my-app/` (namespace, Deployments, Services, the images Flux watches, the list of them) and `clusters/rem-vm/app-my-app.yaml` (the line that tells Flux to apply that folder).
 
 With settings, encrypt them into the folder (the age public key is in Fleet's `.sops.yaml`):
 
@@ -71,7 +75,7 @@ If a pod does not come up: `sudo kubectl -n app-my-app describe pod -l app=api` 
 
 ## 6. Write it down
 
-Add the project to `Kubernetes-and-pipeline.md`: the table of namespaces, and the picture.
+Add the project to `DevLogs/cluster/Kubernetes-and-pipeline.md`: the table of namespaces, and the picture.
 
 ## Taking a project out again
 

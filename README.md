@@ -33,7 +33,7 @@ Flux sees the Fleet commit within seconds (a webhook), creates the namespace `ap
 
 **What the project must be**
 
-- A web app in `frontend/`, and optionally a backend in `backend/`. The web app is served at `/`, the backend at `/api`.
+- A web app in `frontend/`, a backend in `backend/`, or both. With both, the web app is served at `/` and the backend at `/api`. A backend with no web app (an API only) has the whole site, `/` included; the launch says so before it asks, and polls the backend's health address instead of `/`. A launched project keeps its shape: a web app is not added to an API-only project by this, and is not taken out of one either.
 - A piece with a `Dockerfile` is used as it is, whatever the language. The launch then asks four things about its image: the port it listens on, an address that answers 200 without a login, the user number it runs as, and its memory ceiling. The image must not run as root; the cluster refuses those.
 - A piece without one gets the template's, if it is a Vite web app (`npm run build` into `dist/`) or a Node backend (`npm run build` into `dist/`, started with `node dist/server.js` on port 3000). Anything else: write a Dockerfile for it first.
 - A public repository. The cluster downloads images without a login.
@@ -54,7 +54,7 @@ Flux sees the Fleet commit within seconds (a webhook), creates the namespace `ap
 
 **Taking a project out:** delete `apps/<name>/` and `clusters/rem-vm/app-<name>.yaml` from Fleet in one commit and push. Flux deletes the namespace and everything in it, and the site goes quiet. On GitHub, delete the repository, and its image packages (`<name>-web`, `<name>-api`) under Profile, Packages: deleting a repository leaves them behind.
 
-**What it does not do:** create the project, a database for it, or a monitor for its site; blue-green for it (add a `Canary` in its Fleet folder like the ones in `apps/rem-servers/`); sites behind the Cloudflare tunnel; a project with no web app.
+**What it does not do:** create the project, a database for it, or a monitor for its site; blue-green for it (add a `Canary` in its Fleet folder like the ones in `apps/rem-servers/`); sites behind the Cloudflare tunnel; adding a web app to a project launched as an API only.
 
 ### Before the first launch (done once)
 

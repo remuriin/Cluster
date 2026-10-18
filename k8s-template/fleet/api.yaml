@@ -1,5 +1,5 @@
 # The backend: "keep one pod of its image running", and a Service in front of it. The front door
-# sends PROJECT.remservers.me/api to it (route.yaml).
+# sends PROJECT.remservers.me/api to it (route.yaml), or the whole site when there is no web app.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

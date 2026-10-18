@@ -103,6 +103,7 @@ project() { # $1 folder, then: backend, own-web
         # Windows line endings, as an editor on the PC may save it
         printf '# the database\r\nDB_PASSWORD=SENTINEL-9f3a7c21\r\nPORT=3000\r\n' > "$p/backend/.env" ;;
       own-web) printf 'FROM node:24\nUSER node\nCMD ["node","server.js"]\n' > "$p/frontend/Dockerfile" ;;
+      no-web) rm -rf "$p/frontend" ;;
     esac
   done
 }
@@ -120,7 +121,7 @@ project p1
 reset; printf '\np1\ny\n' | launch "$T/p1/nowhere"
 ok "a folder that does not exist is refused" '[[ $? -ne 0 ]]'
 mkdir "$T/empty"; reset; launch "$T/empty" </dev/null
-ok "a project without frontend/ is refused" 'out | grep -q "no frontend/"'
+ok "a project with neither frontend/ nor backend/ is refused" 'out | grep -q "no frontend/ or backend/"'
 mkdir -p "$T/odd/frontend"; echo '{"scripts":{"build":"next build"}}' > "$T/odd/frontend/package.json"; echo '{}' > "$T/odd/frontend/package-lock.json"
 reset; launch "$T/odd" </dev/null
 ok "a web app of an unknown stack without a Dockerfile stops, naming the Dockerfile" 'out | grep -q "Add a Dockerfile"'
@@ -249,6 +250,27 @@ reset; printf '\np4\ny\n' | launch "$T/p4"; code=$?; rm "$T/run-fails"
 ok "a failed pipeline run is reported with its address, and Fleet is not touched" '[[ $code -ne 0 ]] && out | grep -q "actions/runs/77" && [[ ! -e "$F/apps/p4" ]]'
 reset; printf 'p4\ny\n' | launch "$T/p4"; code=$?
 ok "run again after the fix: it goes on from the push and launches" '[[ $code -eq 0 ]] && out | grep -q "Live: https://p4.remservers.me" && [[ -e "$F/apps/p4/web.yaml" ]]'
+
+# --- an API only: a backend and no web app ---
+project a1 backend no-web
+reset; printf '\na1\ny\n' | launch "$T/a1"; code=$?
+ok "API only: the first launch succeeds and says so before going ahead" '[[ $code -eq 0 ]] && out | grep -q "backend only (the API at https://a1.remservers.me/)" && out | grep -q "Live: https://a1.remservers.me"'
+ok "... the repository holds the backend and the workflow, nothing of a web app" 'git -C "$T/remotes/remuriin/a1.git" ls-tree -r --name-only main | grep -q "^backend/Dockerfile$" && ! git -C "$T/remotes/remuriin/a1.git" ls-tree -r --name-only main | grep -q "^frontend/" && ! grep -qE "a1-web|frontend" "$T/a1/.github/workflows/image.yml"'
+ok "... Fleet has no web app file, and the backend starts with the image the pipeline built" '[[ ! -e "$F/apps/a1/web.yaml" ]] && grep -q "a1-api:main-[0-9a-f]\{40\}-[0-9]* # {" "$F/apps/a1/api.yaml" && ! grep -q "a1-web" "$F/apps/a1/images.yaml"'
+ok "... the whole site goes to the backend" 'grep -A3 "value: /$" "$F/apps/a1/route.yaml" | grep -q "name: api$" && ! grep -q "value: /api" "$F/apps/a1/route.yaml"'
+ok "... and its settings were encrypted into Fleet" 'grep -q "^DB_PASSWORD=ENC\[" "$F/apps/a1/backend.env"'
+reset; launch "$T/a1" <<<"y"; code=$?
+ok "API only, run again: knows the project, changes nothing" '[[ $code -eq 0 ]] && out | grep -q "launched before as a1" && out | grep -q "Nothing changed"'
+mkdir -p "$T/a1/frontend"; cp "$T/p1/frontend/package.json" "$T/p1/frontend/package-lock.json" "$T/a1/frontend/"
+reset; launch "$T/a1" <<<"y"
+ok "a web app added to an API-only project is refused, nothing changed" 'out | grep -q "launched as an API only" && ! changed && [[ ! -e "$F/apps/a1/web.yaml" ]]'
+rm -rf "$T/a1/frontend"
+rm -rf "$T/p1/frontend.bak"; mv "$T/p1/frontend" "$T/p1/frontend.bak"
+reset; launch "$T/p1" <<<"y"; mv "$T/p1/frontend.bak" "$T/p1/frontend"
+ok "a web app taken out of a project that has one in Fleet is refused" 'out | grep -q "frontend/ is gone" && ! changed'
+project a2 backend no-web; printf 'FROM node:24\nUSER node\nCMD ["node","server.js"]\n' > "$T/a2/backend/Dockerfile"
+reset; printf '\na2\n4000\n/health\n1000\n128\ny\n' | launch "$T/a2"; code=$?
+ok "API only with its own Dockerfile: the site is waited for at its health address" '[[ $code -eq 0 ]] && grep -q "https://a2.remservers.me/health" "$T/curl.log" && grep -q "containerPort: 4000" "$F/apps/a2/api.yaml"'
 
 ok "no argument handed to gh was rewritten into a Windows path" '! grep -Eq "config\[url\]=[A-Z]:" "$T/gh.log"'
 ok "no launch ever tried to log in to the VPS" '[[ ! -e "$T/ssh.log" ]]'

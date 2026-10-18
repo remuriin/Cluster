@@ -7,7 +7,9 @@ on:
   push:
     branches: [main]
     paths:
+      # web:begin
       - 'frontend/**'
+      # web:end
       # api:begin
       - 'backend/**'
       # api:end
@@ -46,6 +48,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # web:begin
       - name: web app
         uses: docker/build-push-action@v6
         with:
@@ -63,6 +66,7 @@ jobs:
           #   VITE_API_URL=${{ vars.VITE_API_URL }}
           labels: |
             org.opencontainers.image.source=https://github.com/remuriin/REPO
+      # web:end
 
       # api:begin
       - name: backend

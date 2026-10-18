@@ -1,5 +1,6 @@
 # Flux watches this project's images on ghcr.io and picks the newest build of main:
 # tags main-<commit>-<commit time>, highest commit time wins.
+# web:begin
 apiVersion: image.toolkit.fluxcd.io/v1
 kind: ImageRepository
 metadata:
@@ -23,6 +24,7 @@ spec:
   policy:
     numerical:
       order: asc
+# web:end
 # api:begin
 ---
 apiVersion: image.toolkit.fluxcd.io/v1

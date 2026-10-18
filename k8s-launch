@@ -5,8 +5,9 @@
 #   ./k8s-launch <project folder> [--settings]
 #   ./k8s-launch ../MyApp
 #
-# The project needs a web app in frontend/ and may have a backend in backend/. A piece with its own
-# Dockerfile is used as it is; a Vite web app or a Node backend without one gets the template's.
+# The project needs a web app in frontend/, a backend in backend/, or both. A backend with no web app
+# (API only) gets the whole site, / included. A piece with its own Dockerfile is used as it is; a Vite
+# web app or a Node backend without one gets the template's.
 #
 # Nothing here logs in to the VPS. The cluster follows the Fleet repo (Flux), so a launch is: the
 # project's repository on GitHub with a workflow that builds its images, a webhook that tells Flux
@@ -61,7 +62,12 @@ step "Looking at the project"
 for tool in git gh curl sops; do
   command -v "$tool" >/dev/null || die "$tool is not installed"
 done
-[[ -d "$repo/frontend" ]] || die "$repo has no frontend/ folder"
+# no web app, only a backend: the API has the whole site
+apionly=
+if [[ ! -d "$repo/frontend" ]]; then
+  [[ -d "$repo/backend" ]] || die "$repo has no frontend/ or backend/ folder"
+  apionly=1
+fi
 
 # own: it has a Dockerfile of its own. template: a stack the template has one for (or the Dockerfile
 # is the template's, written by an earlier run). none, or unknown.
@@ -81,13 +87,19 @@ kind_of() {
 webkind=$(kind_of frontend)
 [[ "$webkind" != unknown ]] || die "frontend/ has no Dockerfile, and it is not a Vite app with a package-lock.json and a build script. Add a Dockerfile for it first"
 apikind=$(kind_of backend)
-if [[ "$apikind" == unknown ]]; then
+if [[ -n "$apionly" && "$apikind" == unknown ]]; then
+  die "backend/ has no Dockerfile, and it is not a Node project with a package-lock.json and a build script. Add a Dockerfile for it first"
+elif [[ "$apikind" == unknown ]]; then
   [[ ! -e "$repo/backend/package.json" ]] || die "backend/ has no Dockerfile, and it is not a Node project with a package-lock.json and a build script. Add a Dockerfile for it first"
   read -r -p "backend/ does not look like a backend. Launch the web app only? [y/N] " answer
   [[ "$answer" == [yY]* ]] || die "stopped"
   apikind=none
 fi
-echo "web app: $([[ $webkind == own ]] && echo "the Dockerfile in frontend/" || echo "the template's Dockerfile (Vite)")"
+case $webkind in
+  own) echo "web app: the Dockerfile in frontend/" ;;
+  template) echo "web app: the template's Dockerfile (Vite)" ;;
+  none) echo "web app: none, the backend is the whole site (API only)" ;;
+esac
 case $apikind in
   own) echo "backend: the Dockerfile in backend/" ;;
   template) echo "backend: the template's Dockerfile (Node, dist/server.js on port 3000)" ;;
@@ -177,6 +189,14 @@ if [[ -n "$envfile" ]]; then
   [[ -z "$local_" ]] || echo "  note: inside a pod \"localhost\" is the pod itself, not the VPS: $local_"
 fi
 a=$fleet/apps/$project
+# a project launched before keeps its shape: Fleet says whether it has a web app
+if [[ -z "$first" ]]; then
+  if [[ -n "$apionly" && -e "$a/web.yaml" ]]; then
+    die "frontend/ is gone, but $project has a web app in Fleet (apps/$project/web.yaml). Put it back, or take the web app out of Fleet by hand"
+  elif [[ -z "$apionly" && ! -e "$a/web.yaml" ]]; then
+    die "$project was launched as an API only, and a web app is not added by this. Do it by hand (k8s-template/README.md)"
+  fi
+fi
 # encrypted into Fleet: at the first launch, when a backend arrives later, or when asked
 send=
 if [[ -n "$envfile" ]]; then
@@ -207,7 +227,7 @@ knobs_of() { # $1 web|api, $2 its own Dockerfile or not
   fi
   knobs+=("$1-port=$port" "$1-health=$health" "$1-user=$user" "$1-mem=$mem")
 }
-knobs_of web "$webkind"
+[[ -n "$apionly" ]] || knobs_of web "$webkind"
 [[ "$apikind" == none ]] || knobs_of api "$apikind"
 
 # values the web app's build writes into the JavaScript: public by nature
@@ -261,7 +281,8 @@ echo "About to launch:"
 echo "  project     $project  ($([[ -n "$first" ]] && echo "new" || echo "launched before"))"
 echo "  site        https://$site"
 echo "  repository  https://github.com/$slug  ($([[ -n "$origin" ]] && echo "exists" || echo "will be created, PUBLIC"))"
-if [[ "$apikind" == none ]]; then echo "  pieces      web app"; else echo "  pieces      web app and backend"; fi
+if [[ -n "$apionly" ]]; then echo "  pieces      backend only (the API at https://$site/)"
+elif [[ "$apikind" == none ]]; then echo "  pieces      web app"; else echo "  pieces      web app and backend"; fi
 [[ ${#vite[@]} -eq 0 ]] || { echo "  build values, public in the built site (from ${vitefile#"$repo"/}):"; printf '    %s\n' "${vite[@]}"; }
 [[ -z "$send" ]] || echo "  the backend's settings will be encrypted into Fleet from ${envfile#"$repo"/}"
 if [[ -n "$first" ]]; then
@@ -284,6 +305,7 @@ fi
 step "Writing the project's files"
 pieces=()
 [[ "$apikind" == none ]] || pieces=(api)
+[[ -z "$apionly" ]] || pieces=(api-only)
 written=$(bash "$here/k8s-new-project" repo "$repo" "$project" "${pieces[@]}" "${knobs[@]}")
 echo "$written" | sed 's/^/  /'
 wrote() { grep -qE "^(wrote|rewrote) $1\$" <<<"$written"; }
@@ -345,10 +367,10 @@ if [[ -n "$first" ]]; then
   echo "  the run is green"
   # the tag the workflow gave this build: the commit, and the commit's own time
   tag=main-$sha-$(g show -s --format=%ct "$sha")
-  webtag=$tag
+  [[ -n "$apionly" ]] || webtag=$tag
   [[ "$apikind" == none ]] || apitag=$tag
 else
-  webtag=$(sed -nE 's~.*-web:([^ ]+) # \{"\$imagepolicy".*~\1~p' "$a/web.yaml" | head -1)
+  [[ -n "$apionly" ]] || webtag=$(sed -nE 's~.*-web:([^ ]+) # \{"\$imagepolicy".*~\1~p' "$a/web.yaml" | head -1)
   apitag=
   if [[ "$apikind" != none ]]; then
     apitag=$(sed -nE 's~.*-api:([^ ]+) # \{"\$imagepolicy".*~\1~p' "$a/api.yaml" 2>/dev/null | head -1 || true)
@@ -356,11 +378,19 @@ else
     [[ -n "$apitag" ]] || apitag=main
   fi
 fi
-[[ "$webtag" =~ $TAG_RE && ( -z "$apitag" || "$apitag" =~ $TAG_RE ) ]] || die "could not tell which images to run (from $a/web.yaml)"
+if [[ -n "$apionly" ]]; then
+  [[ "$apitag" =~ $TAG_RE ]] || die "could not tell which image to run (from $a/api.yaml)"
+else
+  [[ "$webtag" =~ $TAG_RE && ( -z "$apitag" || "$apitag" =~ $TAG_RE ) ]] || die "could not tell which images to run (from $a/web.yaml)"
+fi
 
 step "The project's folder in Fleet"
-fleetargs=("$name" "$webtag")
-[[ -z "$apitag" ]] || fleetargs+=("$apitag")
+if [[ -n "$apionly" ]]; then
+  fleetargs=("$name" api-only "$apitag")
+else
+  fleetargs=("$name" "$webtag")
+  [[ -z "$apitag" ]] || fleetargs+=("$apitag")
+fi
 [[ -z "$hasenv" ]] || fleetargs+=(env)
 fwritten=$(bash "$here/k8s-new-project" fleet "$fleet" "$project" "${fleetargs[@]}" "${knobs[@]}")
 echo "$fwritten" | sed 's/^/  /'
@@ -401,12 +431,17 @@ f push -q origin main || { f pull -q --rebase && f push -q origin main; } || die
 echo "  pushed"
 
 step "Waiting for the site"
+# an API need not answer at /: its health address is asked instead (the template's is /)
+check=/
+if [[ -n "$apionly" ]]; then
+  for knob in "${knobs[@]}"; do [[ "$knob" != api-health=* ]] || check=${knob#api-health=}; done
+fi
 code=
 for _ in $(seq 1 40); do
-  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$site/" || true)
+  code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "https://$site$check" || true)
   [[ "$code" != 200 ]] || break
   sleep 5
 done
-[[ "$code" == 200 ]] || die "Fleet is pushed but https://$site/ answers ${code:-nothing} after 3 minutes. On the VPS: sudo flux get kustomizations app-$project"
+[[ "$code" == 200 ]] || die "Fleet is pushed but https://$site$check answers ${code:-nothing} after 3 minutes. On the VPS: sudo flux get kustomizations app-$project"
 step "Live: https://$site"
 echo "From now on a push to main deploys it. To take it out: delete apps/$project/ and clusters/rem-vm/app-$project.yaml from Fleet in one commit."

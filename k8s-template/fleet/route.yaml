@@ -1,6 +1,7 @@
 # PROJECT.remservers.me at the front door (Envoy, the Gateway "public" in Fleet's
-# infrastructure/configs): / goes to the web app, /api to the backend. The certificate is the wildcard
-# for *.remservers.me, so a new name needs nothing else.
+# infrastructure/configs): / goes to the web app, /api to the backend. A project with no web app
+# (API only) has the backend at / instead. The certificate is the wildcard for *.remservers.me, so a
+# new name needs nothing else.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -18,7 +19,7 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /api
+            value: API_PREFIX
       backendRefs:
         - name: api
           port: 80
@@ -40,6 +41,7 @@ spec:
               - name: Permissions-Policy
                 value: camera=(), microphone=(), geolocation=()
     # api:end
+    # web:begin
     - matches:
         - path:
             type: PathPrefix
@@ -63,6 +65,7 @@ spec:
                 value: strict-origin-when-cross-origin
               - name: Permissions-Policy
                 value: camera=(), microphone=(), geolocation=()
+    # web:end
 ---
 # per visitor address: 20 a second and 300 a minute (counted by the ratelimit pod in Valkey)
 apiVersion: gateway.envoyproxy.io/v1alpha1

@@ -12,7 +12,7 @@ export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME
 export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=false
 new() { bash "$here/k8s-new-project" "$@" >"$tmp/out" 2>&1; }
 T1=main-0123456789abcdef0123456789abcdef01234567-1791975494
-for d in full web own bad k fleet; do git init -q -b main "$tmp/$d"; done
+for d in full web own bad k fleet apionly; do git init -q -b main "$tmp/$d"; done
 rm -rf "$tmp/bad/.git"
 
 # --- repo: the project's own files ---
@@ -20,7 +20,8 @@ ok "a project with a backend gets its workflow and both Dockerfiles" 'new repo "
 ok "... and no cluster files any more: those live in Fleet" '[[ ! -e "$tmp/full/k8s" && ! -e "$tmp/full/nginx-site.conf" ]]'
 ok "the workflow builds both images with the tag Flux sorts by, and deploys nothing itself" 'grep -q "my-app-web:main-\${{ github.sha }}-\${{ steps.ts.outputs.ts }}" "$tmp/full/.github/workflows/image.yml" && grep -q "my-app-api:main-" "$tmp/full/.github/workflows/image.yml" && ! grep -q "^  deploy:" "$tmp/full/.github/workflows/image.yml"'
 ok "a web-only project gets no backend files or lines" 'new repo "$tmp/web" my-site && [[ ! -e "$tmp/web/backend" ]] && ! grep -q "api" "$tmp/web/.github/workflows/image.yml"'
-ok "nothing is left unfilled" '! grep -rqE "PROJECT|REPO|# api:" "$tmp/full" "$tmp/web" --exclude-dir=.git'
+ok "an API-only project gets the backend's files and workflow part, nothing of a web app" 'new repo "$tmp/apionly" my-api api-only && [[ ! -e "$tmp/apionly/frontend" && -e "$tmp/apionly/backend/Dockerfile" ]] && grep -q "my-api-api:main-" "$tmp/apionly/.github/workflows/image.yml" && ! grep -qE "web|frontend" "$tmp/apionly/.github/workflows/image.yml"'
+ok "nothing is left unfilled" '! grep -rqE "PROJECT|REPO|API_PREFIX|# (api|web):" "$tmp/full" "$tmp/web" "$tmp/apionly" --exclude-dir=.git'
 before=$(cd "$tmp/full" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 cat | cksum)
 ok "a second run keeps every file and changes nothing" 'new repo "$tmp/full" my-app api && ! grep -q "^wrote" "$tmp/out" && [[ "$(cd "$tmp/full" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 cat | cksum)" == "$before" ]]'
 mkdir -p "$tmp/own/frontend"; printf 'FROM node:24\nUSER node\n' > "$tmp/own/frontend/Dockerfile"; owndocker=$(cat "$tmp/own/frontend/Dockerfile")
@@ -45,7 +46,12 @@ ok "the template's own values are the default" 'grep -q "containerPort: 8080" "$
 git -C "$F" add -A; git -C "$F" commit -q -m my-site
 ok "backend and settings added later: the backend's file is written, the two lists written again" 'new fleet "$F" my-site MySite "$T1" main env && grep -q "^wrote apps/my-site/api.yaml" "$tmp/out" && grep -q "^rewrote apps/my-site/images.yaml" "$tmp/out" && grep -q "^rewrote apps/my-site/kustomization.yaml" "$tmp/out" && grep -q "^kept apps/my-site/web.yaml" "$tmp/out" && grep -q "^rewrote apps/my-site/route.yaml" "$tmp/out" && grep -q "name: api$" "$F/apps/my-site/route.yaml"'
 ok "... the backend waits for its first build, and the settings are generated into a Secret" 'grep -q "my-site-api:main # {" "$F/apps/my-site/api.yaml" && grep -q "app-my-site-api" "$F/apps/my-site/images.yaml" && grep -q "secretGenerator" "$F/apps/my-site/kustomization.yaml" && grep -q "envs:" "$F/apps/my-site/kustomization.yaml"'
-ok "nothing is left unfilled in Fleet" '! grep -rqE "PROJECT|REPO|_TAG|(WEB|API)_(PORT|HEALTH|USER|MEM)|# (api|env):(begin|end)" "$F/apps" "$F/clusters"'
+ok "with web app and backend, /api goes to the backend and / to the web app" 'grep -A3 "value: /api$" "$F/apps/my-site/route.yaml" | grep -q "name: api$" && grep -A3 "value: /$" "$F/apps/my-site/route.yaml" | grep -q "name: web$"'
+ok "an API-only project's Fleet folder has no web app file" 'new fleet "$F" my-api MyApi api-only "$T1" env && [[ "$(cd "$F" && find apps/my-api clusters/rem-vm/app-my-api.yaml -type f | sort | tr "\n" " ")" == "apps/my-api/api.yaml apps/my-api/images.yaml apps/my-api/kustomization.yaml apps/my-api/namespace.yaml apps/my-api/route.yaml clusters/rem-vm/app-my-api.yaml " ]]'
+ok "... its route sends the whole site to the backend, in one rule, rate limit kept" '[[ $(grep -c "^    - matches:" "$F/apps/my-api/route.yaml") -eq 1 ]] && grep -A3 "value: /$" "$F/apps/my-api/route.yaml" | grep -q "name: api$" && ! grep -q "value: /api" "$F/apps/my-api/route.yaml" && grep -q "kind: BackendTrafficPolicy" "$F/apps/my-api/route.yaml"'
+ok "... it watches only the backend's image, starts it with the given tag, and has its settings" '! grep -q "my-api-web" "$F/apps/my-api/images.yaml" && grep -q "app-my-api-api" "$F/apps/my-api/images.yaml" && grep -qF "my-api-api:$T1 # {" "$F/apps/my-api/api.yaml" && ! grep -q "web.yaml" "$F/apps/my-api/kustomization.yaml" && grep -q secretGenerator "$F/apps/my-api/kustomization.yaml"'
+ok "an API-only project without its tag is refused" '! new fleet "$tmp/k" ok R api-only'
+ok "nothing is left unfilled in Fleet" '! grep -rqE "PROJECT|REPO|_TAG|API_PREFIX|(WEB|API)_(PORT|HEALTH|USER|MEM)|# (api|web|env):(begin|end)" "$F/apps" "$F/clusters"'
 ok "own values reach the Fleet files" 'new fleet "$F" other Other "$T1" "$T1" web-port=3000 web-health=/api/ok web-user=1001 web-mem=256 api-port=4000 && grep -q "containerPort: 3000" "$F/apps/other/web.yaml" && grep -q "targetPort: 3000" "$F/apps/other/web.yaml" && grep -q "path: /api/ok" "$F/apps/other/web.yaml" && grep -q "runAsUser: 1001" "$F/apps/other/web.yaml" && grep -q "memory: 256Mi" "$F/apps/other/web.yaml" && grep -q "containerPort: 4000" "$F/apps/other/api.yaml"'
 
 # --- what is refused ---

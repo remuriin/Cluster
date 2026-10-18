@@ -1,14 +1,16 @@
 #!/bin/bash
 # Fills in k8s-template/ for one project. k8s-launch runs it for you; by hand, on the PC (Git Bash):
 #
-#   ./k8s-new-project repo  <project folder> <project> [api] [setting=value ...]
+#   ./k8s-new-project repo  <project folder> <project> [api | api-only] [setting=value ...]
 #   ./k8s-new-project fleet <Fleet folder> <project> <repository> <web tag> [api tag] [env] [setting=value ...]
+#   ./k8s-new-project fleet <Fleet folder> <project> <repository> api-only <api tag> [env] [setting=value ...]
 #
 #   ./k8s-new-project repo  ../MyApp my-app api
 #   ./k8s-new-project fleet ../Fleet my-app MyApp main-<commit>-<time> main-<commit>-<time> env
 #
 # repo:  the project's own files: the workflow, and a Dockerfile for each piece that has none.
-#        "api" when the project has a backend.
+#        "api" when the project has a backend. "api-only" when it has a backend and no web app: the
+#        backend then has the whole site, / included.
 # fleet: the project's folder in the Fleet repo (apps/<project>/) and its line for Flux
 #        (clusters/rem-vm/app-<project>.yaml). The tags are the images the pods start with. "env" when
 #        apps/<project>/backend.env holds the backend's settings (k8s-launch encrypts it).
@@ -31,19 +33,27 @@ REPO_RE='^[A-Za-z0-9._-]+$'
 TAG_RE='^(main|main-[0-9a-f]{40}-[0-9]+)$'
 HEALTH_RE='^/[A-Za-z0-9._/-]*$'
 
-usage="usage: k8s-new-project repo <project folder> <project> [api] [setting=value ...]
-       k8s-new-project fleet <Fleet folder> <project> <repository> <web tag> [api tag] [env] [setting=value ...]"
+usage="usage: k8s-new-project repo <project folder> <project> [api | api-only] [setting=value ...]
+       k8s-new-project fleet <Fleet folder> <project> <repository> <web tag> [api tag] [env] [setting=value ...]
+       k8s-new-project fleet <Fleet folder> <project> <repository> api-only <api tag> [env] [setting=value ...]"
 [[ $# -ge 3 ]] || die "$usage"
 mode=$1 dir=$2 project=$3
 shift 3
-repo= webtag= apitag= env= api=
+repo= webtag= apitag= env= api= web=1
 case $mode in
   repo)
-    if [[ $# -gt 0 && "$1" == api ]]; then api=1; shift; fi ;;
+    if [[ $# -gt 0 && "$1" == api ]]; then api=1; shift
+    elif [[ $# -gt 0 && "$1" == api-only ]]; then api=1 web=; shift; fi ;;
   fleet)
     [[ $# -ge 2 ]] || die "$usage"
-    repo=$1 webtag=$2; shift 2
-    if [[ $# -gt 0 && "$1" != *=* && "$1" != env ]]; then apitag=$1; api=1; shift; fi
+    repo=$1; shift
+    if [[ "$1" == api-only ]]; then
+      [[ $# -ge 2 ]] || die "$usage"
+      web= api=1 apitag=$2; shift 2
+    else
+      webtag=$1; shift
+      if [[ $# -gt 0 && "$1" != *=* && "$1" != env ]]; then apitag=$1; api=1; shift; fi
+    fi
     if [[ $# -gt 0 && "$1" == env ]]; then env=1; shift; fi ;;
   *) die "$usage" ;;
 esac
@@ -83,7 +93,10 @@ fi
 # the template marks its backend-only and settings-only lines; what is not wanted is dropped
 cut=()
 if [[ -n "$api" ]]; then cut+=(-e '/# api:(begin|end)$/d'); else cut+=(-e '/# api:begin$/,/# api:end$/d'); fi
+if [[ -n "$web" ]]; then cut+=(-e '/# web:(begin|end)$/d'); else cut+=(-e '/# web:begin$/,/# web:end$/d'); fi
 if [[ -n "$env" ]]; then cut+=(-e '/^# env:(begin|end)$/d'); else cut+=(-e '/^# env:begin$/,/^# env:end$/d'); fi
+# with no web app the backend has the whole site
+if [[ -n "$web" ]]; then prefix=/api; else prefix=/; fi
 # no user number given: the line goes, and the image's own user is used
 [[ -n "${k[web-user]}" ]] || cut+=(-e '/WEB_USER/d')
 [[ -n "${k[api-user]}" ]] || cut+=(-e '/API_USER/d')
@@ -94,6 +107,7 @@ fill() { # $1 file in the template, $2 where it goes
     -e "s|WEB_TAG|$webtag|g; s|API_TAG|$apitag|g" \
     -e "s|WEB_PORT|${k[web-port]}|g; s|WEB_HEALTH|${k[web-health]}|g; s|WEB_USER|${k[web-user]}|g; s|WEB_MEM|${k[web-mem]}|g" \
     -e "s|API_PORT|${k[api-port]}|g; s|API_HEALTH|${k[api-health]}|g; s|API_USER|${k[api-user]}|g; s|API_MEM|${k[api-mem]}|g" \
+    -e "s|API_PREFIX|$prefix|g" \
     -e "s|PROJECT|$project|g; s|REPO|$repo|g" \
     "$template/$1" > "$dir/$2"
 }
@@ -114,12 +128,13 @@ pairs=()
 if [[ $mode == repo ]]; then
   pairs+=(.github/workflows/image.yml .github/workflows/image.yml)
   # a piece that brings its own Dockerfile gets none of the template's files for that piece
-  [[ -e "$dir/frontend/Dockerfile" ]] || pairs+=(frontend/Dockerfile frontend/Dockerfile frontend/nginx.conf frontend/nginx.conf frontend/.dockerignore frontend/.dockerignore)
+  [[ -z "$web" || -e "$dir/frontend/Dockerfile" ]] || pairs+=(frontend/Dockerfile frontend/Dockerfile frontend/nginx.conf frontend/nginx.conf frontend/.dockerignore frontend/.dockerignore)
   [[ -z "$api" || -e "$dir/backend/Dockerfile" ]] || pairs+=(backend/Dockerfile backend/Dockerfile backend/.dockerignore backend/.dockerignore)
 else
   a=apps/$project
-  pairs+=(fleet/namespace.yaml "$a/namespace.yaml" fleet/web.yaml "$a/web.yaml" fleet/route.yaml "$a/route.yaml" fleet/images.yaml "$a/images.yaml"
+  pairs+=(fleet/namespace.yaml "$a/namespace.yaml" fleet/route.yaml "$a/route.yaml" fleet/images.yaml "$a/images.yaml"
           fleet/kustomization.yaml "$a/kustomization.yaml" fleet/flux.yaml "clusters/rem-vm/app-$project.yaml")
+  [[ -z "$web" ]] || pairs+=(fleet/web.yaml "$a/web.yaml")
   [[ -z "$api" ]] || pairs+=(fleet/api.yaml "$a/api.yaml")
 fi
 
