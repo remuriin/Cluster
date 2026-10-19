@@ -1,2 +1,3 @@
 # scripts and config here run on the Linux VPS: LF line endings, even when edited on Windows
 * text=auto eol=lf
+graphify-out/graph.json merge=graphify
